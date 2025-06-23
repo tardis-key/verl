@@ -72,13 +72,14 @@ def _pre_process_inputs(pad_token_id, prompt_token_ids: torch.Tensor) -> List[in
 def _init_dp_envs(tp_size):
     world_size = torch.distributed.get_world_size()
     rank = torch.distributed.get_rank()
-    ip = os.environ.get("VLLM_DP_MASTER_IP", "10.122.199.93")
+    # ip = os.environ.get("VLLM_DP_MASTER_IP", "10.122.199.93")
+    ip = os.environ.get("VLLM_DP_MASTER_IP", "10.122.199.233")
     port = int(os.environ.get("MASTER_PORT")) + 10
     
     # dp_size = world_size // tp_size
     # local_dp_rank = rank // tp_size
     # group_idx = rank % tp_size
-    dp_size = 8
+    dp_size = 32
     dp_size = min(world_size // tp_size, dp_size)
     local_dp_rank = rank // tp_size % dp_size
     num_dp_domain = world_size // dp_size
@@ -100,6 +101,29 @@ def _init_dp_envs(tp_size):
     envs.VLLM_DP_MASTER_IP = os.environ["VLLM_DP_MASTER_IP"]
     envs.VLLM_DP_MASTER_PORT = int(os.environ["VLLM_DP_MASTER_PORT"])
 
+def _init_dp_envs2(tp_size):
+    world_size = torch.distributed.get_world_size()
+    rank = torch.distributed.get_rank()
+    ip = os.environ.get("VLLM_DP_MASTER_IP", "10.122.199.93")
+    port = int(os.environ.get("MASTER_PORT")) + 10
+
+    dp_size = world_size // tp_size
+    local_dp_rank = rank // tp_size
+    group_idx = rank % tp_size
+    distributed_init_method = f"tcp://{ip}:{port}"
+    print(f"Method2:Adjusting world_size={dp_size} rank={local_dp_rank} distributed_init_method={distributed_init_method} for DP")
+    logger.info(
+            "Method2:Adjusting world_size=%d rank=%d distributed_init_method=%s for DP",
+            world_size, rank, distributed_init_method)
+    os.environ["VLLM_DP_MASTER_IP"] = ip
+    os.environ["VLLM_DP_MASTER_PORT"] = str(port + group_idx)
+    os.environ["VLLM_DP_RANK"] = str(local_dp_rank)
+    os.environ["VLLM_DP_SIZE"] = str(dp_size)
+    os.environ["VLLM_DP_RANK_LOCAL"] = str(local_dp_rank)
+    os.environ["VLLM_PORT"] = os.environ["VLLM_DP_MASTER_PORT"]
+    envs.VLLM_DP_RANK = int(os.environ["VLLM_DP_RANK"])
+    envs.VLLM_DP_MASTER_IP = os.environ["VLLM_DP_MASTER_IP"]
+    envs.VLLM_DP_MASTER_PORT = int(os.environ["VLLM_DP_MASTER_PORT"])
 
 def _repeat_interleave(value: Union[torch.Tensor, np.ndarray], repeats: int) -> Union[torch.Tensor, List[Any]]:
     if isinstance(value, torch.Tensor):
