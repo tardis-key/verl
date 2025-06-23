@@ -168,6 +168,7 @@ def reduce_timing(timing_raw: Dict[str, float]) -> Dict[str, float]:
     Returns:
         Dict[str, float]: Reduced timing information.
     """
+    print(f"rank:{torch.distributed.get_rank()}in time!")
     if not dist.is_initialized():
         return timing_raw
 
@@ -179,4 +180,5 @@ def reduce_timing(timing_raw: Dict[str, float]) -> Dict[str, float]:
     torch.distributed.all_reduce(timing_list, op=torch.distributed.ReduceOp.AVG)
     timing_list = [tensor.item() for tensor in timing_list.to("cpu")]
     timing_generate = {key_list[i]: timing_list[i] for i in range(len(key_list))}
+    print('out, timing!')
     return timing_generate

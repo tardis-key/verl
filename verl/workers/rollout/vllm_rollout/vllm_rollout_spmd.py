@@ -48,6 +48,9 @@ from verl.utils.debug import GPUMemoryLogger
 from verl.utils.torch_functional import get_response_mask, pad_2d_list_to_length
 from verl.workers.rollout.base import BaseRollout
 
+from vllm.utils import get_open_port
+import vllm.envs as envs
+
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
@@ -65,6 +68,37 @@ def _pre_process_inputs(pad_token_id, prompt_token_ids: torch.Tensor) -> List[in
     non_pad_index = torch.nonzero(prompt_token_ids != pad_token_id, as_tuple=False)[0][0]
     token_ids = prompt_token_ids[non_pad_index:].tolist()
     return token_ids
+
+def _init_dp_envs(tp_size):
+    world_size = torch.distributed.get_world_size()
+    rank = torch.distributed.get_rank()
+    ip = os.environ.get("VLLM_DP_MASTER_IP", "10.122.199.93")
+    port = int(os.environ.get("MASTER_PORT")) + 10
+    
+    # dp_size = world_size // tp_size
+    # local_dp_rank = rank // tp_size
+    # group_idx = rank % tp_size
+    dp_size = 8
+    dp_size = min(world_size // tp_size, dp_size)
+    local_dp_rank = rank // tp_size % dp_size
+    num_dp_domain = world_size // dp_size
+    group_idx =  (rank // (dp_size * tp_size)) * (rank // (dp_size * tp_size)) + rank % tp_size
+    distributed_init_method = f"tcp://{ip}:{port}"
+    print(f"Adjusting world_size={dp_size} rank={local_dp_rank} distributed_init_method={distributed_init_method} for DP")
+    logger.info(
+            "Adjusting world_size=%d rank=%d distributed_init_method=%s for DP",
+            world_size, rank, distributed_init_method)
+    os.environ["VLLM_DP_MASTER_IP"] = ip
+    os.environ["VLLM_DP_MASTER_PORT"] = str(port + group_idx)
+    os.environ["VLLM_DP_RANK"] = str(local_dp_rank)
+    os.environ["VLLM_DP_SIZE"] = str(dp_size)
+    os.environ["VLLM_DP_RANK_LOCAL"] = str(local_dp_rank)
+    os.environ["VLLM_PORT"] = os.environ["VLLM_DP_MASTER_PORT"]
+    # devices_indixes = range(local_dp_rank, local_dp_rank + tp)
+    # os.environ["ASCEND_RT_VISIBLE_DEVICES"] = ','.join([str(d) for d in devs])
+    envs.VLLM_DP_RANK = int(os.environ["VLLM_DP_RANK"])
+    envs.VLLM_DP_MASTER_IP = os.environ["VLLM_DP_MASTER_IP"]
+    envs.VLLM_DP_MASTER_PORT = int(os.environ["VLLM_DP_MASTER_PORT"])
 
 
 def _repeat_interleave(value: Union[torch.Tensor, np.ndarray], repeats: int) -> Union[torch.Tensor, List[Any]]:
@@ -145,7 +179,7 @@ class vLLMRollout(BaseRollout):
         engine_kwargs = {key: val for key, val in engine_kwargs.items() if val is not None}
         if config.get("limit_images", None):  # support for multi-image data
             engine_kwargs["limit_mm_per_prompt"] = {"image": config.get("limit_images")}
-
+        _init_dp_envs(tensor_parallel_size)
         self.inference_engine = LLM(
             model=model_path,
             enable_sleep_mode=True,
@@ -155,7 +189,7 @@ class vLLMRollout(BaseRollout):
             enforce_eager=config.enforce_eager,
             gpu_memory_utilization=config.gpu_memory_utilization,
             disable_custom_all_reduce=True,
-            disable_mm_preprocessor_cache=True,
+            disable_mm_preprocessor_cache=False,
             skip_tokenizer_init=False,
             max_model_len=max_model_len,
             load_format=load_format,
@@ -164,6 +198,7 @@ class vLLMRollout(BaseRollout):
             enable_chunked_prefill=config.enable_chunked_prefill,
             enable_prefix_caching=True,
             trust_remote_code=trust_remote_code,
+            enable_expert_parallel=True,
             seed=config.get("seed", 0),
             **lora_kwargs,
             **engine_kwargs,
