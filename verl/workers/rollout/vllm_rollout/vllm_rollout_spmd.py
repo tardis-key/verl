@@ -79,7 +79,7 @@ def _init_dp_envs(tp_size):
     # dp_size = world_size // tp_size
     # local_dp_rank = rank // tp_size
     # group_idx = rank % tp_size
-    dp_size = 32
+    dp_size = 8
     dp_size = min(world_size // tp_size, dp_size)
     local_dp_rank = rank // tp_size % dp_size
     num_dp_domain = world_size // dp_size
