@@ -69,7 +69,7 @@ def _pre_process_inputs(pad_token_id, prompt_token_ids: torch.Tensor) -> List[in
     token_ids = prompt_token_ids[non_pad_index:].tolist()
     return token_ids
 
-def _init_dp_envs(tp_size):
+def _init_dp_envs(tp_size, dp_size):
     world_size = torch.distributed.get_world_size()
     rank = torch.distributed.get_rank()
     # ip = os.environ.get("VLLM_DP_MASTER_IP", "10.122.199.93")
@@ -79,7 +79,7 @@ def _init_dp_envs(tp_size):
     # dp_size = world_size // tp_size
     # local_dp_rank = rank // tp_size
     # group_idx = rank % tp_size
-    dp_size = 8
+    print(f'dpsize={dp_size}')
     dp_size = min(world_size // tp_size, dp_size)
     local_dp_rank = rank // tp_size % dp_size
     num_dp_domain = world_size // dp_size
@@ -97,30 +97,6 @@ def _init_dp_envs(tp_size):
     os.environ["VLLM_PORT"] = os.environ["VLLM_DP_MASTER_PORT"]
     # devices_indixes = range(local_dp_rank, local_dp_rank + tp)
     # os.environ["ASCEND_RT_VISIBLE_DEVICES"] = ','.join([str(d) for d in devs])
-    envs.VLLM_DP_RANK = int(os.environ["VLLM_DP_RANK"])
-    envs.VLLM_DP_MASTER_IP = os.environ["VLLM_DP_MASTER_IP"]
-    envs.VLLM_DP_MASTER_PORT = int(os.environ["VLLM_DP_MASTER_PORT"])
-
-def _init_dp_envs2(tp_size):
-    world_size = torch.distributed.get_world_size()
-    rank = torch.distributed.get_rank()
-    ip = os.environ.get("VLLM_DP_MASTER_IP", "10.122.199.93")
-    port = int(os.environ.get("MASTER_PORT")) + 10
-
-    dp_size = world_size // tp_size
-    local_dp_rank = rank // tp_size
-    group_idx = rank % tp_size
-    distributed_init_method = f"tcp://{ip}:{port}"
-    print(f"Method2:Adjusting world_size={dp_size} rank={local_dp_rank} distributed_init_method={distributed_init_method} for DP")
-    logger.info(
-            "Method2:Adjusting world_size=%d rank=%d distributed_init_method=%s for DP",
-            world_size, rank, distributed_init_method)
-    os.environ["VLLM_DP_MASTER_IP"] = ip
-    os.environ["VLLM_DP_MASTER_PORT"] = str(port + group_idx)
-    os.environ["VLLM_DP_RANK"] = str(local_dp_rank)
-    os.environ["VLLM_DP_SIZE"] = str(dp_size)
-    os.environ["VLLM_DP_RANK_LOCAL"] = str(local_dp_rank)
-    os.environ["VLLM_PORT"] = os.environ["VLLM_DP_MASTER_PORT"]
     envs.VLLM_DP_RANK = int(os.environ["VLLM_DP_RANK"])
     envs.VLLM_DP_MASTER_IP = os.environ["VLLM_DP_MASTER_IP"]
     envs.VLLM_DP_MASTER_PORT = int(os.environ["VLLM_DP_MASTER_PORT"])
@@ -148,6 +124,8 @@ class vLLMRollout(BaseRollout):
         assert not (not config.enforce_eager and config.free_cache_engine), "disable CUDA graph (enforce_eager = False) if free cache engine"
 
         tensor_parallel_size = self.config.get("tensor_model_parallel_size", 1)
+        data_parallel_size = self.config.get("data_parallel_size", -1)
+        assert data_parallel_size != -1, "dp 没有设置！！"
         assert tensor_parallel_size <= torch.distributed.get_world_size(), "tensor parallel size should be less than or equal to the world size"
         max_num_batched_tokens = self.config.get("max_num_batched_tokens", 8192)
 
@@ -203,7 +181,7 @@ class vLLMRollout(BaseRollout):
         engine_kwargs = {key: val for key, val in engine_kwargs.items() if val is not None}
         if config.get("limit_images", None):  # support for multi-image data
             engine_kwargs["limit_mm_per_prompt"] = {"image": config.get("limit_images")}
-        _init_dp_envs(tensor_parallel_size)
+        _init_dp_envs(tensor_parallel_size, data_parallel_size)
         self.inference_engine = LLM(
             model=model_path,
             enable_sleep_mode=True,
