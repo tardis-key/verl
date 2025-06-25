@@ -70,10 +70,12 @@ def _pre_process_inputs(pad_token_id, prompt_token_ids: torch.Tensor) -> List[in
     return token_ids
 
 def _init_dp_envs(tp_size, dp_size):
+    import socket
+    ip = socket.gethostbyname(socket.gethostname())
     world_size = torch.distributed.get_world_size()
     rank = torch.distributed.get_rank()
     # ip = os.environ.get("VLLM_DP_MASTER_IP", "10.122.199.93")
-    ip = os.environ.get("VLLM_DP_MASTER_IP", "10.122.199.233")
+    # ip = os.environ.get("VLLM_DP_MASTER_IP", "10.122.199.233")
     port = int(os.environ.get("MASTER_PORT")) + 10
     
     # dp_size = world_size // tp_size
