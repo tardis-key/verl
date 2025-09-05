@@ -1,0 +1,59 @@
+dataset="/home/ascend-offline/zhuanghong_hw/0903_tyw_verl/datasets/gsm8k"
+train_dataset=$dataset/xxx
+val_dataset=$dataset/xxx
+model_path="/dev/shm/ckpt_8b" 
+set -x
+
+    #data.train_files=/home/ascend-offline/zhuanghong_hw/verl-hw-0709/data/DAPO-Math-17k/data/dapo-math-17k.parquet \\
+{
+python3 -m verl.trainer.main_ppo \\
+    --config-name='ppo_megatron_trainer.yaml'\\
+    algorithm.adv_estimator=grpo \\
+    data.train_files=$train_dataset \\
+    data.val_files=$val_dataset \\
+    data.train_batch_size=1024 \\
+    data.max_prompt_length=16384 \\
+    data.max_response_length=2048 \\
+    ++actor_rollout_ref.rollout.max_num_batched_tokens=16384 \\
+    data.filter_overlong_prompts=True \\
+    data.truncation='error' \\
+    actor_rollout_ref.model.path=$model_path \\
+    actor_rollout_ref.actor.optim.lr=5e-8 \\
+    actor_rollout_ref.actor.ppo_mini_batch_size=256 \\
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \\
+    actor_rollout_ref.actor.megatron.pipeline_model_parallel_size=2 \\
+    actor_rollout_ref.actor.megatron.tensor_model_parallel_size=4 \\
+    actor_rollout_ref.actor.use_kl_loss=True \\
+    actor_rollout_ref.actor.entropy_coeff=0 \\
+    actor_rollout_ref.actor.kl_loss_coef=0.001 \\
+    actor_rollout_ref.actor.kl_loss_type=low_var_kl \\
+    actor_rollout_ref.model.enable_gradient_checkpointing=True \\
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \\
+    actor_rollout_ref.rollout.tensor_model_parallel_size=8 \\
+    actor_rollout_ref.rollout.name=vllm \\
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \\
+    actor_rollout_ref.rollout.n=5 \\
+    actor_rollout_ref.rollout.enable_chunked_prefill=True \\
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \\
+    ++actor_rollout_ref.ref.megatron.param_offload=True \\
+    ++actor_rollout_ref.actor.megatron.grad_offload=True \\
+    ++actor_rollout_ref.actor.megatron.optimizer_offload=True \\
+    actor_rollout_ref.ref.megatron.pipeline_model_parallel_size=2 \\
+    actor_rollout_ref.ref.megatron.tensor_model_parallel_size=4 \\
+    +actor_rollout_ref.actor.megatron.override_transformer_config.recompute_method=uniform \\
+    +actor_rollout_ref.actor.megatron.override_transformer_config.recompute_granularity=full \\
+    +actor_rollout_ref.actor.megatron.override_transformer_config.recompute_num_layers=1 \\
+    +actor_rollout_ref.actor.megatron.override_transformer_config.use_flash_attn=True \\
+    ++actor_rollout_ref.ref.megatron.override_transformer_config.use_flash_attn=True \\
+    algorithm.use_kl_in_reward=False \\
+    trainer.critic_warmup=0 \\
+    trainer.logger=['console'] \\
+    trainer.project_name='verl_grpo_example_gsm8k' \\
+    trainer.experiment_name='qwen2_5_7b_function_rm' \\
+    trainer.n_gpus_per_node=16 \\
+    trainer.nnodes=1 \\
+    trainer.save_freq=-1 \\
+    trainer.test_freq=5 \\
+    trainer.total_epochs=5 \\
+    trainer.device=npu $@
+} 2>&1 
