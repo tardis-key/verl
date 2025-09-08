@@ -2,7 +2,7 @@
 # It outperforms the Qwen2 7B base model by two percentage points on the test set of GSM8K.
 set -x
 
-project_name='DAPO'
+project_name='GRPO'
 exp_name='GRPO-Qwen3-8B-npu'
 gen_tp=2
 WORKING_DIR=${WORKING_DIR:-"./"}
