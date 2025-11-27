@@ -440,6 +440,16 @@ class vLLMHttpServerBase:
     async def wait_for_requests_to_drain(self):
         await self.engine.wait_for_requests_to_drain()
 
+    def start_profile(self, **kwargs):
+        """Start profiling on all workers."""
+        if self.workers:
+            ray.get([worker.start_profile.remote(**kwargs) for worker in self.workers])
+
+    def stop_profile(self):
+        """Stop profiling on all workers."""
+        if self.workers:
+            ray.get([worker.stop_profile.remote() for worker in self.workers])
+
 
 @ray.remote(num_cpus=1)
 class vLLMHttpServer(vLLMHttpServerBase):
@@ -558,6 +568,14 @@ class vLLMReplica(RolloutReplica):
         # Drain DP engines for safe sleep.
         await self.servers[0].wait_for_requests_to_drain.remote()
         await asyncio.gather(*[server.sleep.remote() for server in self.servers])
+
+    async def start_profile(self, **kwargs):
+        """Start profiling on all servers."""
+        await asyncio.gather(*[server.start_profile.remote(**kwargs) for server in self.servers])
+
+    async def stop_profile(self):
+        """Stop profiling on all servers."""
+        await asyncio.gather(*[server.stop_profile.remote() for server in self.servers])
 
 
 def _qwen2_5_vl_dedup_image_tokens(prompt_ids: list[int], processor):

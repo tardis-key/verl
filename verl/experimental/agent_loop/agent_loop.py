@@ -781,7 +781,7 @@ class AgentLoopManager:
         Returns:
             DataProto: Output batch.
         """
-
+        self.start_profile(async_start=True)
         if self.config.actor_rollout_ref.rollout.free_cache_engine:
             self.wake_up()
         if self.reward_model_manager and self.config.reward_model.rollout.free_cache_engine:
@@ -803,7 +803,7 @@ class AgentLoopManager:
         # calculate performance metrics
         metrics = [output.meta_info.pop("metrics") for output in outputs]  # List[List[Dict[str, str]]]
         timing = self._performance_metrics(metrics, output)
-
+        self.stop_profile()
         output.meta_info = {"timing": timing, **outputs[0].meta_info}
         return output
 
@@ -836,6 +836,14 @@ class AgentLoopManager:
     def sleep(self):
         """Sleep all rollout replica instances."""
         self._run_all([replica.sleep() for replica in self.rollout_replicas])
+
+    def start_profile(self, **kwargs):
+        """Start profiling on all replicas."""
+        self._run_all([replica.start_profile(**kwargs) for replica in self.rollout_replicas])
+
+    def stop_profile(self):
+        """Stop profiling on all replicas."""
+        self._run_all([replica.stop_profile() for replica in self.rollout_replicas])
 
     def _run_all(self, tasks: list[asyncio.Task]):
         async def run_all():

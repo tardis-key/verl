@@ -77,7 +77,7 @@ from verl.utils.device import is_npu_available
 from verl.utils.distributed import initialize_global_process_group_ray
 from verl.utils.import_utils import deprecated
 from verl.utils.model import get_lora_rank_from_adapter
-from verl.utils.profiler import GPUMemoryLogger
+from verl.utils.profiler import GPUMemoryLogger, mark_start_range, mark_end_range
 from verl.utils.ray_utils import ray_noset_visible_devices
 from verl.utils.torch_functional import get_response_mask, pad_2d_list_to_length
 from verl.utils.vllm import TensorLoRARequest, VLLMHijack, is_version_ge

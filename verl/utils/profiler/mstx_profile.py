@@ -192,16 +192,23 @@ class NPUProfiler(DistProfiler):
     def start(self, **kwargs):
         role, profile_step = kwargs.get("role", None), kwargs.get("profile_step", None)
         profile_step = str(profile_step) if profile_step is not None else None
+        self.async_start = kwargs.get("async_start", False)
         if self.enable and self.this_rank:
             self.this_step = True
-            if not self.discrete and NPUProfiler._define_count == 0:
+            if (not self.discrete or self.async_start) and NPUProfiler._define_count == 0:
+                if not self.discrete:
+                    prof_role = "e2e"
+                    prof_step = profile_step
+                else:
+                    prof_role = role
+                    prof_step = None
                 self.profile_npu = get_npu_profiler(
                     contents=self.profile_contents,
                     profile_level=self.profile_level,
                     profile_save_path=self.profile_save_path,
                     analysis=self.analysis,
-                    role=role,
-                    profile_step=profile_step,
+                    role=prof_role,
+                    profile_step=prof_step,
                 )
                 self.profile_npu.start()
                 NPUProfiler._define_count += 1
@@ -209,7 +216,7 @@ class NPUProfiler(DistProfiler):
     def stop(self):
         if self.enable and self.this_rank:
             self.this_step = False
-            if not self.discrete and NPUProfiler._define_count == 1:
+            if (not self.discrete or self.async_start) and NPUProfiler._define_count == 1:
                 self.profile_npu.step()
                 self.profile_npu.stop()
                 NPUProfiler._define_count -= 1

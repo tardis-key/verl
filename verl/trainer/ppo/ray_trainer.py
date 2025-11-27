@@ -897,7 +897,7 @@ class RayPPOTrainer:
     def _start_profiling(self, do_profile: bool) -> None:
         """Start profiling for all worker groups if profiling is enabled."""
         if do_profile:
-            self.actor_rollout_wg.start_profile(role="e2e", profile_step=self.global_steps)
+            self.actor_rollout_wg.start_profile(profile_step=self.global_steps)
             if self.use_reference_policy:
                 self.ref_policy_wg.start_profile(profile_step=self.global_steps)
             if self.use_critic:
