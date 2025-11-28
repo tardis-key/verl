@@ -440,15 +440,15 @@ class vLLMHttpServerBase:
     async def wait_for_requests_to_drain(self):
         await self.engine.wait_for_requests_to_drain()
 
-    def start_profile(self, **kwargs):
+    async def start_profile(self, **kwargs):
         """Start profiling on all workers."""
         if self.workers:
-            ray.get([worker.start_profile.remote(**kwargs) for worker in self.workers])
+            await asyncio.gather(*[worker.start_profile.remote(**kwargs) for worker in self.workers])
 
-    def stop_profile(self):
+    async def stop_profile(self):
         """Stop profiling on all workers."""
         if self.workers:
-            ray.get([worker.stop_profile.remote() for worker in self.workers])
+            await asyncio.gather(*[worker.stop_profile.remote() for worker in self.workers])
 
 
 @ray.remote(num_cpus=1)

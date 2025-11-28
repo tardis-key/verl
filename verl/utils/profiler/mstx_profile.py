@@ -197,18 +197,16 @@ class NPUProfiler(DistProfiler):
             self.this_step = True
             if (not self.discrete or self.async_start) and NPUProfiler._define_count == 0:
                 if not self.discrete:
-                    prof_role = "e2e"
-                    prof_step = profile_step
+                    role = "e2e"
                 else:
-                    prof_role = role
-                    prof_step = None
+                    profile_step = None
                 self.profile_npu = get_npu_profiler(
                     contents=self.profile_contents,
                     profile_level=self.profile_level,
                     profile_save_path=self.profile_save_path,
                     analysis=self.analysis,
-                    role=prof_role,
-                    profile_step=prof_step,
+                    role=role,
+                    profile_step=profile_step,
                 )
                 self.profile_npu.start()
                 NPUProfiler._define_count += 1

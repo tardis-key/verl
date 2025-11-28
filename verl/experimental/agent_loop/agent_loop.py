@@ -839,6 +839,8 @@ class AgentLoopManager:
 
     def start_profile(self, **kwargs):
         """Start profiling on all replicas."""
+        # todo： 无法感知step信息
+        # todo:  暂时不能和训练阶段一起采集
         self._run_all([replica.start_profile(**kwargs) for replica in self.rollout_replicas])
 
     def stop_profile(self):

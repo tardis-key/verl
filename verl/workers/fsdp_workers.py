@@ -1936,6 +1936,16 @@ class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
         await self.trainer_mode()
         return True
 
+    @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD)
+    async def start_profile(self, **kwargs):
+        self.profiler.start(**kwargs)
+        return True
+
+    @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD)
+    async def stop_profile(self):
+        self.profiler.stop()
+        return True
+
     # ============================ vLLM related ============================
 
     @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD)
