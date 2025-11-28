@@ -199,6 +199,7 @@ class NPUProfiler(DistProfiler):
                 if not self.discrete:
                     role = "e2e"
                 else:
+                    role = "generate_sequence"
                     profile_step = None
                 self.profile_npu = get_npu_profiler(
                     contents=self.profile_contents,
