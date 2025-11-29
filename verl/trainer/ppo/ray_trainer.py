@@ -897,6 +897,7 @@ class RayPPOTrainer:
     def _start_profiling(self, do_profile: bool) -> None:
         """Start profiling for all worker groups if profiling is enabled."""
         if do_profile:
+            self.async_rollout_manager.start_profile(async_start=True)
             if self.use_critic:
                 self.critic_wg.start_profile(profile_step=self.global_steps)
             if self.use_rm:
@@ -905,6 +906,7 @@ class RayPPOTrainer:
     def _stop_profiling(self, do_profile: bool) -> None:
         """Stop profiling for all worker groups if profiling is enabled."""
         if do_profile:
+            self.async_rollout_manager.stop_profile()
             if self.use_critic:
                 self.critic_wg.stop_profile()
             if self.use_rm:
