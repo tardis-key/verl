@@ -11,6 +11,7 @@
   - `{type}` is in `feat`, `fix`, `refactor`, `chore`, `test`
   - If this PR breaks any API (CLI arguments, config, function signature, etc.), add `[BREAKING]` to the beginning of the title.
   - Example: `[BREAKING][fsdp, megatron] feat: dynamic batching`
+  test
 
 ### Test
 
