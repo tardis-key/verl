@@ -383,11 +383,13 @@ class SeparateRayPPOTrainer(RayPPOTrainer):
     def _fit_start_profile(self):
         timing_raw = self.timing_raw
         with marked_timer("start_profile", timing_raw):
-            self._start_profiling(
+            should_profile = (
                 not self.prev_step_profile and self.curr_step_profile
                 if self.config.global_profiler.profile_continuous_steps
                 else self.curr_step_profile
             )
+            print(f"curr_step_profile: {should_profile}, global_steps: {self.global_steps}")
+            self._start_profiling(should_profile)
 
     def _fit_get_batch(self, batch_dict: dict) -> DataProto:
         batch = DataProto.from_single_dict(batch_dict)
@@ -406,7 +408,7 @@ class SeparateRayPPOTrainer(RayPPOTrainer):
 
         with marked_timer("gen", timing_raw, color="red"):
             if self.curr_step_profile:
-                self.async_rollout_manager.start_profile(global_step=self.global_steps)
+                self.async_rollout_manager.start_profile()
             gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
             self.checkpoint_manager.sleep_replicas()
             if self.curr_step_profile:
@@ -689,11 +691,13 @@ class SeparateRayPPOTrainer(RayPPOTrainer):
                 if self.config.global_profiler.steps is not None
                 else False
             )
-            self._stop_profiling(
+            should_profile = (
                 self.curr_step_profile and not self.next_step_profile
                 if self.config.global_profiler.profile_continuous_steps
                 else self.curr_step_profile
             )
+            print(f"stop_profile : {should_profile}, global_steps: {self.global_steps}")
+            self._stop_profiling(should_profile)
             self.prev_step_profile = self.curr_step_profile
             self.curr_step_profile = self.next_step_profile
 

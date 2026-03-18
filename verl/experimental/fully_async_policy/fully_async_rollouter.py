@@ -590,6 +590,10 @@ class FullyAsyncRollouter(SeparateRayPPOTrainer):
         async with self.lock:
             self.paused = False
             self.running = True
+        
+        # TODO: add condition control
+        print(f"start_profile: {self.global_steps}, start profile async_rollout_manager")
+        await self.async_rollout_manager.start_profile()
 
         # Create the main asynchronous task
         generation_task = safe_create_task(self._streaming_generation_main(), name="generation_task")
@@ -608,6 +612,8 @@ class FullyAsyncRollouter(SeparateRayPPOTrainer):
 
             # Wait for the task to complete
             await asyncio.gather(generation_task, monitor_task, return_exceptions=True)
+        
+        await self.async_rollout_manager.stop_profile()
 
         print("[FullyAsyncRollouter] Rollouter fit completed")
 
