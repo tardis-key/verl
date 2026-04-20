@@ -1317,6 +1317,10 @@ class RayPPOTrainer:
         if self.config.actor_rollout_ref.rollout.skip.get("enable", False):
             rollout_skip = RolloutSkip(self.config, self.async_rollout_manager)
             rollout_skip.wrap_generate_sequences()
+        
+        # 初始化SkipManager
+        from verl.utils.skip.skip_manager import SkipManager
+        SkipManager.init(self.config)
 
         # add tqdm
         progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
