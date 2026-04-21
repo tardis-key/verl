@@ -1188,7 +1188,9 @@ class AgentLoopManager:
             max_cache_size=DEFAULT_ROUTING_CACHE_SIZE,
         )
 
+    from verl.utils.skip import SkipManager
     @auto_await
+    @SkipManager.annotate(role="rollout")
     async def generate_sequences(self, prompts: DataProto) -> DataProto:
         """Split input batch and dispatch to agent loop workers.
 
