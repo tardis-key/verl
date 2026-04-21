@@ -1,53 +1,56 @@
-from typing import Callable, Any, Optional, List
-from verl.utils.skip.skip_rollout import SkipRollout
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import functools
+from typing import Any, Callable, Optional
 
-class BaseSkip:
-    actions : List[str]
-    action : str
-    skip_functions : dict[str, Callable]
-    preconditions : dict[str, Callable]
+from verl.utils.skip.skip_base import BaseSkip, SKIP_REGISTRY
+from verl.utils.skip.skip_rollout import SkipRollout
 
-    @classmethod
-    def meet_precondition(cls) -> bool:
-        return cls.preconditions[cls.action]()
-    
-    @classmethod
-    def warp_function(cls) -> Any:
-        return cls.skip_functions[cls.action]()
-    
-    @classmethod
-    def prepare_data(cls, result, *args, **kwargs) -> Any:
-        pass
-
-    @classmethod
-    def always_true(self) -> bool:
-        return True
 
 class SkipManager:
-    skip_classes : dict[str, BaseSkip] = {
-        "generate": SkipRollout
-    }
-    config : Any
-    step : int
+    skip_instances: dict[str, BaseSkip]
+    config: Any
+    step: int
 
     @classmethod
-    def int(cls, config):
+    def init(cls, config: Any):
         cls.config = config
+        cls.step = -1
+        for name, skip_cls in SKIP_REGISTRY.items():
+            instance = skip_cls(cls.config.skip.get(name), cls.config)
+            cls.skip_instances[name] = instance    
     
     @classmethod
-    def annotate(cls, role: Optional[str] = None, **kwargs_outer) -> Callable:
-        def decorator(func):
+    def set_step(cls, step: int):
+        cls.step = step
+
+    @classmethod
+    def annotate(cls, role: str, **kwargs_outer) -> Callable:
+        def decorator(func: Callable) -> Callable:
             @functools.wraps(func)
             def wrapper(*args, **kwargs_inner):
-                if cls.config.role.enable and cls.step in cls.config.role.steps:
-                    if cls.skip_classes[role].meet_precondition():
-                        return cls.skip_classes[role].warp_function()
-                    else:
-                        result = func(*args, **kwargs_inner)
-                        cls.skip_classes[role].prepare_data(result, *args, **kwargs_inner)
-                        return result
-                else:
+                if not cls.skip_instances[role].is_enabled():
                     return func(*args, **kwargs_inner)
+                cls.skip_instances[role].set_context(cls.step)
+                if cls.skip_instances[role].meet_precondition():
+                    return cls.skip_instances[role].warp_function(func, *args, **kwargs_inner)
+                else:
+                    result = func(*args, **kwargs_inner)
+                    cls.skip_instances[role].prepare_data(result, *args, **kwargs_inner)
+                    return result
+
             return wrapper
+
         return decorator

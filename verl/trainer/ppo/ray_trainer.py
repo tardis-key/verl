@@ -1304,6 +1304,10 @@ class RayPPOTrainer:
 
         current_epoch = self.global_steps // len(self.train_dataloader)
 
+        # SkipManager 必须在任意会触发 rollout 的路径之前初始化（含 val_before_train）。
+        from verl.utils.skip.skip_manager import SkipManager
+        SkipManager.init(self.config)
+
         # perform validation before training
         # currently, we only support validation using the reward_function.
         if self.config.trainer.get("val_before_train", True):
@@ -1317,10 +1321,6 @@ class RayPPOTrainer:
         if self.config.actor_rollout_ref.rollout.skip.get("enable", False):
             rollout_skip = RolloutSkip(self.config, self.async_rollout_manager)
             rollout_skip.wrap_generate_sequences()
-        
-        # 初始化SkipManager
-        from verl.utils.skip.skip_manager import SkipManager
-        SkipManager.init(self.config)
 
         # add tqdm
         progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
@@ -1329,6 +1329,8 @@ class RayPPOTrainer:
         self.global_steps += 1
         last_val_metrics = None
         self.max_steps_duration = 0
+
+        SkipManager.set_step(self.global_steps)
 
         prev_step_profile = False
         curr_step_profile = (
@@ -1662,6 +1664,7 @@ class RayPPOTrainer:
 
                 progress_bar.update(1)
                 self.global_steps += 1
+                SkipManager.set_step(self.global_steps)
 
                 if (
                     hasattr(self.config.actor_rollout_ref.actor, "profiler")
