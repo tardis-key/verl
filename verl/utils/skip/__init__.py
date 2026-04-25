@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .skip_base import BaseSkip
+from .base_skip import BaseSkip
 from .skip_manager import SkipManager
 
 __all__ = ["BaseSkip", "SkipManager"]

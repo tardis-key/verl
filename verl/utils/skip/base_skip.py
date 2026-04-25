@@ -12,28 +12,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Callable, List
+from typing import Any, Callable
 from enum import Enum
 
+
 class SkipAction(Enum):
-    CACHE = "cache" # replace result with cached result
-    REPEAT = "repeat" # repeat the result
-    RANDOM = "random" # random the result
+    CACHE = "cache"
+    # Replace the result with cached data
+    # ensuring that the output of each step is consistent with the non-skip version from the previous run,
+    # while relying on cached result in every steps.
+    REPEAT = "repeat"  # repeat the result
+    # Replace with the latest cached results
+    # while relying on one cached result at least
+    RANDOM = "random"  # random the result
+    EMPTY = "empty"  # do thing, and return empty
 
 
 class BaseSkip:
+    support_actions = []
+
     def __init__(self, local_config, global_config):
-        self.action = local_config.action
+        self.action = SkipAction(local_config.action)
         self.enable = local_config.enable
+        self.dump_dir = local_config.dump_dir
+        self.steps = local_config.steps
         self.global_config = global_config
         self.global_step = -1
+        if self.action not in self.support_actions:
+            raise ValueError(f"Unsupported action: {self.action}. Supported actions are: {self.support_actions}")
 
     def set_context(self, global_step: int):
         self.global_step = global_step
 
     def is_enabled(self) -> bool:
         return self.enable
-    
+
     def meet_precondition(self) -> bool:
         raise NotImplementedError("meet_precondition is not implemented")
 
@@ -55,11 +68,3 @@ def register_skip(
         return cls
 
     return decorator
-
-
-def get_cluster_parser_cls(name):
-    if name not in SKIP_REGISTRY:
-        raise ValueError(
-            f"Unsupported cluster parser: {name}. Supported cls are: {list(SKIP_REGISTRY.keys())}"
-        )
-    return SKIP_REGISTRY[name]
