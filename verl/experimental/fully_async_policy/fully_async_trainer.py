@@ -429,7 +429,7 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
         self.reward_extra_infos_dict = {}
 
         steps = self.config.global_profiler.steps
-        should_profile = steps is not None and (self.current_param_version - 1) in steps
+        should_profile = steps is not None and (self.current_param_version + 1) in steps
         self._fit_start_profile(should_profiler=should_profile)
 
         with marked_timer("step", self.timing_raw):
@@ -503,7 +503,7 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
             return
 
         steps = self.config.global_profiler.steps
-        last_profiler_step = self.current_param_version - 1
+        last_profiler_step = self.current_param_version
         if steps is not None and last_profiler_step in steps:
             await asyncio.wrap_future(
                 self.rollouter._stop_profiling.remote().future()
@@ -518,7 +518,8 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
         )
 
         profiler_step = last_profiler_step + 1
-        if steps is not None and profiler_step in steps:
+       
+       if steps is not None and profiler_step in steps:
             await asyncio.wrap_future(
                 self.rollouter._start_profiling.remote().future()
             )
