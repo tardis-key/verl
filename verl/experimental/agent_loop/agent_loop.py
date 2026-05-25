@@ -90,6 +90,20 @@ class GlobalRequestLoadBalancer:
         self._inflight_requests[server_id] -= 1
 
 
+@ray.remote
+class ReplicaProfileLock:
+    """Per-replica locks shared across AgentLoopWorkers for discrete rollout profiling."""
+
+    def __init__(self, num_replicas: int):
+        self._locks = [asyncio.Lock() for _ in range(num_replicas)]
+
+    async def acquire(self, replica_rank: int) -> None:
+        await self._locks[replica_rank].acquire()
+
+    def release(self, replica_rank: int) -> None:
+        self._locks[replica_rank].release()
+
+
 def _get_rollout_and_model_config(config: DictConfig) -> tuple[DictConfig, DictConfig]:
     # TODO: backward compatibility, remove this once we switch to new trainer.
     if config.get("actor_rollout_ref"):
@@ -110,6 +124,8 @@ class AsyncLLMServerManager:
         config: DictConfig,
         servers: list[tuple[str, ray.actor.ActorHandle]],
         load_balancer_handle: ray.actor.ActorHandle,
+        replica_server_handles: Optional[list[list[ray.actor.ActorHandle]]] = None,
+        profile_lock: Optional[ray.actor.ActorHandle] = None,
     ):
         """Initialize the AsyncLLMServerManager.
 
@@ -117,10 +133,21 @@ class AsyncLLMServerManager:
             config (DictConfig): whole config for main entrypoint.
             servers (list[tuple[str, ray.actor.ActorHandle]]): (address, handle) pairs for each LLM server.
             load_balancer_handle (ray.actor.ActorHandle): shared global load balancer actor.
+            replica_server_handles: per-replica vLLM server handles (all nodes). Used for rollout profiling.
+            profile_lock: Ray actor holding per-replica asyncio locks for profiling.
         """
         self.config = config
         self._load_balancer = load_balancer_handle
         self._server_id_to_handle: dict[str, ray.actor.ActorHandle] = dict(servers)
+        self._replica_server_handles = replica_server_handles
+        self._profile_lock = profile_lock
+        self._server_id_to_replica_rank = {
+            server_id: replica_rank for replica_rank, (server_id, _) in enumerate(servers)
+        }
+        self._profile_rollout = False
+
+    def set_profile_rollout(self, enabled: bool) -> None:
+        self._profile_rollout = enabled
 
     async def _acquire_server(self, request_id: str) -> tuple[str, ray.actor.ActorHandle]:
         server_id = await self._load_balancer.acquire_server.remote(request_id=request_id)
@@ -154,17 +181,39 @@ class AsyncLLMServerManager:
         Returns:
             TokenOutput: token output
         """
+        # 只有在这里才进行replica选择
         server_id, server = await self._acquire_server(request_id)
+        replica_rank = self._server_id_to_replica_rank[server_id]
+        profile_this_request = (
+            self._profile_rollout
+            and self._replica_server_handles is not None
+            and self._profile_lock is not None
+        )
+        if profile_this_request:
+            await self._profile_lock.acquire.remote(replica_rank)
         try:
-            output: TokenOutput = await server.generate.remote(
-                request_id=uuid4().hex,  # use new request_id for each turn
-                prompt_ids=prompt_ids,
-                sampling_params=sampling_params,
-                image_data=image_data,
-                video_data=video_data,
-            )
-            return output
+            if profile_this_request:
+                await asyncio.gather(
+                    *[handle.start_profile.remote() for handle in self._replica_server_handles[replica_rank]]
+                )
+            try:
+                output: TokenOutput | DiffusionOutput = await server.generate.remote(
+                    request_id=uuid4().hex,  # use new request_id for each turn
+                    prompt_ids=prompt_ids,
+                    sampling_params=sampling_params,
+                    image_data=image_data,
+                    video_data=video_data,
+                    **kwargs,
+                )
+                return output
+            finally:
+                if profile_this_request:
+                    await asyncio.gather(
+                        *[handle.stop_profile.remote() for handle in self._replica_server_handles[replica_rank]]
+                    )
         finally:
+            if profile_this_request:
+                await self._profile_lock.release.remote(replica_rank)
             self._release_server(server_id)
 
 
@@ -1088,7 +1137,16 @@ class AgentLoopManager:
                 raise ValueError("PROMETHEUS needs disable_log_stats==False, but it is currently True.")
             update_prometheus_config(self.rollout_config.prometheus, self.server_addresses, self.rollout_config.name)
 
+    def _prepare_agent_loop_workers(self) -> None:
+        """Hook for subclasses to initialize state before spawning agent loop workers."""
+        return
+
+    def _get_worker_remote_extra_kwargs(self) -> dict[str, Any]:
+        """Extra keyword arguments forwarded to agent_loop_workers_class.remote()."""
+        return {}
+
     async def _init_agent_loop_workers(self):
+        self._prepare_agent_loop_workers()
         self.agent_loop_workers = []
         num_workers = self.rollout_config.agent.num_workers
         load_balancer_handle = self.global_load_balancer
@@ -1120,6 +1178,7 @@ class AgentLoopManager:
                     teacher_servers,
                     teacher_load_balancer_handle,
                     self.reward_loop_worker_handles,
+                    **self._get_worker_remote_extra_kwargs(),
                 )
             )
 

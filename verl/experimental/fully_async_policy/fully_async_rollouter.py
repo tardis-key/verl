@@ -425,6 +425,7 @@ class FullyAsyncRollouter(SeparateRayPPOTrainer):
                 break
 
             self.global_steps += 1
+            # rollout step这里维护
 
         # End signal
         await self.pending_queue.put(None)
@@ -499,8 +500,11 @@ class FullyAsyncRollouter(SeparateRayPPOTrainer):
 
     async def _process_single_sample_streaming(self, rollout_sample: RolloutSample):
         """Process a single sample streamingly"""
-        # Calling asynchronous generation methods
+        if self.get_curr_step_profile(rollout_sample.sample_id):
+            # Per-replica discrete profile in AsyncLLMServerManager.generate (after acquire_server).
+            rollout_sample.full_batch.meta_info["profile_rollout"] = True
         ret = await self.async_rollout_manager.generate_sequences_single(rollout_sample.full_batch)
+
         rollout_sample.full_batch = ret
         rollout_sample.full_batch.non_tensor_batch["uid"] = np.array(
             [f"uid_{rollout_sample.sample_id}"] * len(rollout_sample.full_batch), dtype=object
@@ -685,3 +689,15 @@ class FullyAsyncRollouter(SeparateRayPPOTrainer):
         }
 
         return stats
+    
+    def get_curr_step_profile(self, sample_id: str) -> bool:
+        # sample_id format: sample_{epoch}_{rollout_step}
+        try:
+            rollout_step = int(sample_id.rsplit("_", 1)[-1])
+        except (ValueError, IndexError):
+            return False
+        if self.config.global_profiler.rollout_steps is not None:
+            return rollout_step in self.config.global_profiler.rollout_steps
+        if self.config.global_profiler.steps is not None:
+            return rollout_step in self.config.global_profiler.steps
+        return False

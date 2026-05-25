@@ -402,7 +402,7 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
         self.max_steps_duration = 0
 
         self.global_steps += 1
-
+        # train的global_steps在这里维护
         # Use queue mode, no need for traditional dataloader iterator
         # Initialize to get the first batch of data
         while True:
@@ -419,6 +419,7 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
         self._fit_save_checkpoint(force=True)
 
     async def fit_step(self, batch_dict: dict = None):
+        # 完成的step训练
         """
         Single-step training template method. Handles all logic for one training step.
 

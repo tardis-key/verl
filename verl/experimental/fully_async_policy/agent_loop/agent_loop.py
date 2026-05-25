@@ -24,6 +24,7 @@ from verl.experimental.agent_loop.agent_loop import (
     AgentLoopManager,
     AgentLoopWorker,
     AsyncLLMServerManager,
+    ReplicaProfileLock,
     TokenOutput,
 )
 from verl.experimental.teacher_loop import TeacherModelManager
@@ -134,8 +135,17 @@ class FullyAsyncAgentLoopWorker(AgentLoopWorker):
         teacher_servers: list[tuple[str, ray.actor.ActorHandle]] = None,
         teacher_load_balancer_handle: ray.actor.ActorHandle = None,
         reward_loop_worker_handles: list[ray.actor.ActorHandle] = None,
+        *,
+        replica_server_handles: list[list[ray.actor.ActorHandle]],
+        profile_lock: ray.actor.ActorHandle,
     ):
-        self.server_manager = FullyAsyncLLMServerManager(config, servers, load_balancer_handle)
+        self.server_manager = FullyAsyncLLMServerManager(
+            config,
+            servers,
+            load_balancer_handle,
+            replica_server_handles=replica_server_handles,
+            profile_lock=profile_lock,
+        )
         super().__init__(
             config,
             servers,
@@ -144,6 +154,13 @@ class FullyAsyncAgentLoopWorker(AgentLoopWorker):
             teacher_load_balancer_handle,
             reward_loop_worker_handles,
         )
+
+    async def generate_sequences(self, batch: DataProto) -> DataProto:
+        self.server_manager.set_profile_rollout(batch.meta_info.get("profile_rollout", False))
+        try:
+            return await super().generate_sequences(batch)
+        finally:
+            self.server_manager.set_profile_rollout(False)
 
 
 class FullyAsyncAgentLoopManager(AgentLoopManager):
@@ -159,6 +176,16 @@ class FullyAsyncAgentLoopManager(AgentLoopManager):
         super().__init__(config, worker_group, rollout_resource_pool, teacher_model_manager, reward_loop_worker_handles)
         if self.distillation_enabled:
             raise NotImplementedError("Distillation is not implemented in FullyAsyncAgentLoopManager yet.")
+
+    def _prepare_agent_loop_workers(self) -> None:
+        self._replica_server_handles = [replica.servers for replica in self.rollout_replicas]
+        self.profile_lock = ReplicaProfileLock.remote(len(self._replica_server_handles))
+
+    def _get_worker_remote_extra_kwargs(self) -> dict[str, Any]:
+        return {
+            "replica_server_handles": self._replica_server_handles,
+            "profile_lock": self.profile_lock,
+        }
 
     @auto_await
     async def generate_sequences_single(self, prompts: DataProto) -> DataProto:
