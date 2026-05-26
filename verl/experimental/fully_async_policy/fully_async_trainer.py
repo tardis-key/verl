@@ -519,7 +519,7 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
 
         profiler_step = last_profiler_step + 1
        
-       if steps is not None and profiler_step in steps:
+        if steps is not None and profiler_step in steps:
             await asyncio.wrap_future(
                 self.rollouter._start_profiling.remote().future()
             )
