@@ -505,9 +505,7 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
         steps = self.config.global_profiler.steps
         last_profiler_step = self.current_param_version
         if steps is not None and last_profiler_step in steps:
-            await asyncio.wrap_future(
-                self.rollouter._stop_profiling.remote().future()
-            )
+            await asyncio.wrap_future(self.rollouter._stop_profiling.remote().future())
 
         with marked_timer("timing_s/param_sync", self.timing_raw):
             await self.checkpoint_manager.update_weights(global_steps=self.current_param_version)
@@ -518,11 +516,9 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
         )
 
         profiler_step = last_profiler_step + 1
-       
+
         if steps is not None and profiler_step in steps:
-            await asyncio.wrap_future(
-                self.rollouter._start_profiling.remote().future()
-            )
+            await asyncio.wrap_future(self.rollouter._start_profiling.remote().future())
 
         # Reset staleness in rollouter
         timing_raw = await asyncio.wrap_future(self.rollouter.reset_staleness.remote().future())
