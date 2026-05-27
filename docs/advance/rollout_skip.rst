@@ -1,6 +1,13 @@
 RolloutSkip Function Usage Documentation
 ========================================
 
+.. note::
+
+   This page documents the **legacy** ``verl.utils.rollout_skip.RolloutSkip`` path
+   (``actor_rollout_ref.rollout.skip``). It remains available **temporarily** for backward
+   compatibility but **will be removed**. New projects should use :doc:`skip_manager` (**SkipManager**
+   + ``skip.rollout``) instead.
+
 Last updated: 2026-03-25
 
 Applicable Scenarios
