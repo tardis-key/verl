@@ -1,0 +1,118 @@
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import functools
+import inspect
+import warnings
+from typing import Callable
+
+from omegaconf import OmegaConf
+
+from verl.utils.config import omega_conf_to_dataclass
+from verl.utils.skip.base_skip import SKIP_REGISTRY
+from verl.utils.skip.config import SkipManagerConfig
+
+
+class SkipManager:
+    """SkipManager is a manager for skip.
+
+    Class attributes default here so code paths (e.g. tests or modules that only import
+    ``@SkipManager.annotate``) work **before** ``SkipManager.init(config)`` runs — decorators
+    then no-op until the trainer initializes skip state.
+    """
+
+    config: SkipManagerConfig | None = None
+    step: int = -1
+    # This step is shared across all skip_instances
+    # Different enabled skip_instances (no online step acquisition) shall use the same step definition.
+    skip_instances: dict = {}  # noqa: RUF012 — intentionally mutable class defaults, reset in ``init``
+
+    @classmethod
+    def init(cls, config):
+        legacy_skip_enable = OmegaConf.select(config, "actor_rollout_ref.rollout.skip.enable", default=False)
+        if legacy_skip_enable:
+            warnings.warn(
+                ("`actor_rollout_ref.rollout.skip` is deprecated. Please migrate to `skip.rollout`."),
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        cls.config = omega_conf_to_dataclass(config.skip, dataclass_type=SkipManagerConfig)
+        if cls.config.rollout.enable and legacy_skip_enable:
+            warnings.warn(
+                (
+                    "Both `skip.rollout.enable` and legacy "
+                    "`actor_rollout_ref.rollout.skip.enable` are enabled. "
+                    "Legacy rollout skip is deprecated and will be disabled automatically."
+                ),
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            config.actor_rollout_ref.rollout.skip.enable = False
+        cls.step = -1
+        cls.skip_instances = {}
+        for name, skip_cls in SKIP_REGISTRY.items():
+            local_cfg = getattr(cls.config, name, None)
+            if local_cfg is None:
+                continue
+            instance = skip_cls(local_cfg, config)
+            cls.skip_instances[name] = instance
+
+    @classmethod
+    def set_step(cls, step: int):
+        cls.step = step
+
+    @classmethod
+    def annotate(cls, role: str, **kwargs_outer) -> Callable:
+        def decorator(func: Callable) -> Callable:
+            if inspect.iscoroutinefunction(func):
+
+                @functools.wraps(func)
+                async def async_wrapper(*args, **kwargs_inner):
+                    skip_instance = cls.skip_instances.get(role)
+                    if skip_instance is None or not skip_instance.is_enabled():
+                        return await func(*args, **kwargs_inner)
+                    if skip_instance.support_online_step:
+                        step = skip_instance.extract_step(*args, **kwargs_inner)
+                    else:
+                        step = cls.step
+                    if step not in skip_instance.steps:
+                        return await func(*args, **kwargs_inner)
+                    if skip_instance.meet_precondition(step, func, *args, **kwargs_inner):
+                        return skip_instance.warp_function(step, func, *args, **kwargs_inner)
+                    result = await func(*args, **kwargs_inner)
+                    skip_instance.prepare_data(step, result, *args, **kwargs_inner)
+                    return result
+
+                return async_wrapper
+
+            @functools.wraps(func)
+            def sync_wrapper(*args, **kwargs_inner):
+                skip_instance = cls.skip_instances.get(role)
+                if skip_instance is None or not skip_instance.is_enabled():
+                    return func(*args, **kwargs_inner)
+                if skip_instance.support_online_step:
+                    step = skip_instance.extract_step(*args, **kwargs_inner)
+                else:
+                    step = cls.step
+                if step not in skip_instance.steps:
+                    return func(*args, **kwargs_inner)
+                if skip_instance.meet_precondition(step, func, *args, **kwargs_inner):
+                    return skip_instance.warp_function(step, func, *args, **kwargs_inner)
+                result = func(*args, **kwargs_inner)
+                skip_instance.prepare_data(step, result, *args, **kwargs_inner)
+                return result
+
+            return sync_wrapper
+
+        return decorator
