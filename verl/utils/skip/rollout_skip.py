@@ -96,8 +96,8 @@ class RolloutSkip(BaseSkip):
 
     def prepare_data(self, step: int, result, *args, **kwargs):
         step_dir = self._get_step_dump_dir(step)
-        step_dir.mkdir(parents=True, exist_ok=True)
         try:
+            step_dir.mkdir(parents=True, exist_ok=True)
             result.save_to_disk(step_dir.joinpath(self.gen_batch_name))
             meta_path = step_dir.joinpath(self.meta_name)
             meta_path.write_text(json.dumps({"global_steps": step}))
