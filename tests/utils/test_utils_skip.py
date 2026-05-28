@@ -257,6 +257,39 @@ class TestRolloutSkipMeetWarpPrepare:
         loaded = rs.warp_function(3, _noop)
         assert torch.allclose(loaded.batch["k"], original.batch["k"])
 
+    def test_warp_function_repeat_resolves_step_per_call(self, tmp_path: Path):
+        """Each repeat warp call must resolve its own substitute step (no shared instance cache)."""
+        cfg = _minimal_skip_cfg(str(tmp_path), action="repeat")
+        local = _local_rollout_config(cfg)
+        rs = RolloutSkip(local, cfg)
+        root = _project_dump_root(tmp_path, cfg)
+        _write_valid_step_dump(root, 1, DataProto.from_dict(tensors={"t": torch.tensor([1.0])}))
+        _write_valid_step_dump(root, 5, DataProto.from_dict(tensors={"t": torch.tensor([5.0])}))
+
+        assert rs.meet_precondition(12, _noop) is True
+        loaded_small = rs.warp_function(3, _noop)
+        loaded_large = rs.warp_function(12, _noop)
+        assert loaded_small.batch["t"].item() == 1.0
+        assert loaded_large.batch["t"].item() == 5.0
+
+    def test_warp_function_repeat_without_meet_precondition(self, tmp_path: Path):
+        cfg = _minimal_skip_cfg(str(tmp_path), action="repeat")
+        local = _local_rollout_config(cfg)
+        rs = RolloutSkip(local, cfg)
+        root = _project_dump_root(tmp_path, cfg)
+        proto = DataProto.from_dict(tensors={"t": torch.tensor([7.0])})
+        _write_valid_step_dump(root, 7, proto)
+
+        loaded = rs.warp_function(99, _noop)
+        assert loaded.batch["t"].item() == 7.0
+
+    def test_warp_function_repeat_raises_when_no_dump(self, tmp_path: Path):
+        cfg = _minimal_skip_cfg(str(tmp_path), action="repeat")
+        local = _local_rollout_config(cfg)
+        rs = RolloutSkip(local, cfg)
+        with pytest.raises(RuntimeError, match="repeat action expected dumped data"):
+            rs.warp_function(1, _noop)
+
 
 class TestAsyncRolloutSkipExtractStep:
     def test_extract_step_from_args(self, tmp_path: Path):

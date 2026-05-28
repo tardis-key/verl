@@ -31,6 +31,9 @@ class SkipAction(Enum):
 class BaseSkip:
     """Base class for skip.
 
+    Implementations are shared per role via ``SkipManager.skip_instances`` and may receive
+    overlapping calls in async pipelines; avoid mutable per-request fields on ``self``.
+
     Args:
         local_config: The local configuration object, refer to verl.utils.skip.SkipManagerConfig.
         global_config: The global configuration object.
@@ -48,7 +51,6 @@ class BaseSkip:
         if self.action not in self.support_actions:
             raise ValueError(f"Unsupported action: {self.action}. Supported actions are: {self.support_actions}")
 
-
     def is_enabled(self) -> bool:
         return self.enable
 
@@ -60,7 +62,7 @@ class BaseSkip:
 
     def prepare_data(self, step: int, result, *args, **kwargs):
         raise NotImplementedError("prepare_data is not implemented")
-    
+
     def extract_step(self, *args, **kwargs):
         raise NotImplementedError("extract_step is not implemented")
 

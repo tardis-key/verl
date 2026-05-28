@@ -318,8 +318,9 @@ See section 2 for ``steps`` semantics per role.
 - **Shared ``SkipManager.step``**: One class-level slot per process. Fits sequential trainer loops
   (``main_ppo``): ``set_step(global_steps)`` before rollout.
 - **Online step**: ``AsyncRolloutSkip`` sets ``support_online_step = True`` and parses
-  ``sample_id`` on each call so in-flight async samples do not share a single counter. Instance
-  state used by ``repeat`` is resolved per call.
+  ``sample_id`` on each call so in-flight async samples do not share a single counter. For
+  ``repeat``, ``RolloutSkip`` recomputes ``_find_latest_step`` on every ``meet_precondition`` and
+  ``warp_function`` call (no shared mutable step field on the skip instance).
 
 Extending with custom skip modules
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

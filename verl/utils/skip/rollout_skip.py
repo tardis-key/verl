@@ -45,7 +45,6 @@ class RolloutSkip(BaseSkip):
         )
         self.response_length = OmegaConf.select(global_config, "data.max_response_length", default=0)
         self.prompt_length = OmegaConf.select(global_config, "data.max_prompt_length", default=0)
-        self.lastest_step = -1
 
     def meet_precondition(self, step: int, func: Callable, *args, **kwargs) -> bool:
         if self.action == SkipAction.CACHE:
@@ -61,8 +60,7 @@ class RolloutSkip(BaseSkip):
                 return True
 
         elif self.action == SkipAction.REPEAT:
-            self.lastest_step = self._find_latest_step(step)
-            if self.lastest_step == -1:
+            if self._find_latest_step(step) == -1:
                 print(
                     f"{self.print_mark}\033[33mNo dumped data found "
                     f"from {self._get_project_dump_dir()}. "
@@ -70,24 +68,28 @@ class RolloutSkip(BaseSkip):
                     flush=True,
                 )
                 return False
-            else:
-                return True
+            return True
         return False
 
     def warp_function(self, step: int, func: Callable, *args, **kwargs):
         """Load cached gen batch; ``*args``/``kwargs`` mirror the decorated call (e.g. ``self, prompts``)."""
         if self.action == SkipAction.CACHE:
-            step_dir = self._get_step_dump_dir(step)
+            load_step = step
         elif self.action == SkipAction.REPEAT:
-            if self.lastest_step == -1:
-                self.lastest_step = self._find_latest_step(step)
-            step_dir = self._get_step_dump_dir(self.lastest_step)
+            load_step = self._find_latest_step(step)
+            if load_step == -1:
+                raise RuntimeError(
+                    f"{self.print_mark}repeat action expected dumped data for step {step}, "
+                    f"but none was found under {self._get_project_dump_dir()}"
+                )
         else:
-            step_dir = Path()
+            load_step = step
+        step_dir = self._get_step_dump_dir(load_step)
         gen_batch_path = step_dir.joinpath(self.gen_batch_name)
         result = DataProto.load_from_disk(gen_batch_path)
         print(
-            f"{self.print_mark}\033[33mLoad generate result at step {step} from {gen_batch_path}\033[0m",
+            f"{self.print_mark}\033[33mLoad generate result at step {load_step} "
+            f"(request step {step}) from {gen_batch_path}\033[0m",
             flush=True,
         )
         return result
@@ -105,8 +107,7 @@ class RolloutSkip(BaseSkip):
             )
         except Exception as e:
             print(
-                f"{self.print_mark}\033[31mFailed to dump generate result "
-                f"at step {step} to {step_dir}: {e}\033[0m",
+                f"{self.print_mark}\033[31mFailed to dump generate result at step {step} to {step_dir}: {e}\033[0m",
                 flush=True,
             )
 
@@ -172,16 +173,13 @@ def parse_async_rollout_sample_step(sample_id: str) -> int:
     """
     parts = sample_id.split("_")
     if len(parts) < 3 or parts[0] != "sample":
-        raise ValueError(
-            f"Invalid async rollout sample_id: {sample_id!r}, expected sample_<epoch>_<feed_index>"
-        )
+        raise ValueError(f"Invalid async rollout sample_id: {sample_id!r}, expected sample_<epoch>_<feed_index>")
     return int(parts[-1])
 
 
 @register_skip("async_rollout")
 class AsyncRolloutSkip(RolloutSkip):
-    """Rollout skip for fully async policy (``skip.async_rollout``).
-    """
+    """Rollout skip for fully async policy (``skip.async_rollout``)."""
 
     support_online_step = True
 
@@ -192,4 +190,3 @@ class AsyncRolloutSkip(RolloutSkip):
         if sample_id is None:
             raise ValueError("async_rollout extract_step expects sample_id as the third argument")
         return parse_async_rollout_sample_step(str(sample_id))
-    

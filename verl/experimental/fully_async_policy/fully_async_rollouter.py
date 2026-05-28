@@ -937,7 +937,9 @@ class FullyAsyncRollouter(SeparateRayPPOTrainer):
     async def _process_single_sample_streaming(self, rollout_sample: RolloutSample):
         """Process a single sample streamingly"""
         # Calling asynchronous generation methods
-        ret = await self.async_rollout_manager.generate_sequences_single(rollout_sample.full_batch, rollout_sample.sample_id)
+        ret = await self.async_rollout_manager.generate_sequences_single(
+            rollout_sample.full_batch, rollout_sample.sample_id
+        )
         rollout_sample.full_batch = ret
         rollout_sample.full_batch.non_tensor_batch["uid"] = np.array(
             [f"uid_{rollout_sample.sample_id}"] * len(rollout_sample.full_batch), dtype=object

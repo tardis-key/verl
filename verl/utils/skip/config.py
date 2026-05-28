@@ -33,6 +33,7 @@ class RolloutSkipConfig(BaseConfig):
         assert all(isinstance(step, int) for step in self.steps), "`steps` must contain int only"
         assert self.action in {"cache", "repeat"}, f"`action` must be one of cache/repeat, got {self.action}"
 
+
 @dataclass
 class AsyncRolloutSkipConfig(BaseConfig):
     """Config for rollout skip behavior."""
