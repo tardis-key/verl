@@ -52,13 +52,13 @@ class BaseSkip:
     def is_enabled(self) -> bool:
         return self.enable
 
-    def meet_precondition(self, func: Callable, *args, **kwargs) -> bool:
+    def meet_precondition(self, step: int, func: Callable, *args, **kwargs) -> bool:
         raise NotImplementedError("meet_precondition is not implemented")
 
-    def warp_function(self, func: Callable, *args, **kwargs):
+    def warp_function(self, step: int, func: Callable, *args, **kwargs):
         raise NotImplementedError("warp_function is not implemented")
 
-    def prepare_data(self, result, *args, **kwargs):
+    def prepare_data(self, step: int, result, *args, **kwargs):
         raise NotImplementedError("prepare_data is not implemented")
     
     def extract_step(self, *args, **kwargs):

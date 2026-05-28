@@ -72,6 +72,26 @@ class SkipManager:
     def set_step(cls, step: int):
         cls.step = step
 
+    @staticmethod
+    def _get_prompts_batch(args, kwargs):
+        """Resolve ``DataProto`` from decorated ``generate_sequences(self, prompts, ...)`` calls."""
+        prompts = kwargs.get("prompts")
+        if prompts is not None:
+            return prompts
+        if len(args) > 1:
+            return args[1]
+        if len(args) == 1 and hasattr(args[0], "meta_info"):
+            return args[0]
+        return None
+
+    @classmethod
+    def _should_bypass_for_validation(cls, args, kwargs) -> bool:
+        prompts = cls._get_prompts_batch(args, kwargs)
+        if prompts is None:
+            return False
+        meta_info = getattr(prompts, "meta_info", None) or {}
+        return bool(meta_info.get("validate", False))
+
     @classmethod
     def annotate(cls, role: str, **kwargs_outer) -> Callable:
         def decorator(func: Callable) -> Callable:
@@ -79,6 +99,8 @@ class SkipManager:
 
                 @functools.wraps(func)
                 async def async_wrapper(*args, **kwargs_inner):
+                    if cls._should_bypass_for_validation(args, kwargs_inner):
+                        return await func(*args, **kwargs_inner)
                     skip_instance = cls.skip_instances.get(role)
                     if skip_instance is None or not skip_instance.is_enabled():
                         return await func(*args, **kwargs_inner)
@@ -98,6 +120,8 @@ class SkipManager:
 
             @functools.wraps(func)
             def sync_wrapper(*args, **kwargs_inner):
+                if cls._should_bypass_for_validation(args, kwargs_inner):
+                    return func(*args, **kwargs_inner)
                 skip_instance = cls.skip_instances.get(role)
                 if skip_instance is None or not skip_instance.is_enabled():
                     return func(*args, **kwargs_inner)

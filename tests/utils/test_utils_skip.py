@@ -142,13 +142,13 @@ class TestSkipRegistryAndBaseSkip:
         class _UtSkip(BaseSkip):
             support_actions = [SkipAction.EMPTY]
 
-            def meet_precondition(self, func, *args, **kwargs) -> bool:
+            def meet_precondition(self, step: int, func, *args, **kwargs) -> bool:
                 return True
 
-            def warp_function(self, func, *args, **kwargs):
+            def warp_function(self, step: int, func, *args, **kwargs):
                 return "warped"
 
-            def prepare_data(self, result, *args, **kwargs):
+            def prepare_data(self, step: int, result, *args, **kwargs):
                 pass
 
         assert SKIP_REGISTRY[name] is _UtSkip
@@ -312,6 +312,54 @@ class TestSkipManagerInitAndAnnotate:
 
         SkipManager.set_step(1)
         assert work(40) == 41
+
+    def test_should_bypass_for_validation(self):
+        batch = DataProto.from_dict(tensors={"x": torch.zeros(1)})
+        batch.meta_info = {"validate": True}
+        assert SkipManager._should_bypass_for_validation((object(), batch), {}) is True
+        batch.meta_info = {"validate": False}
+        assert SkipManager._should_bypass_for_validation((object(), batch), {}) is False
+
+    def test_annotate_sync_validation_bypasses_cache_and_dump(self, tmp_path: Path):
+        cfg = _minimal_skip_cfg(str(tmp_path), enable=True, steps=[1], action="cache")
+        SkipManager.init(cfg)
+        root = _project_dump_root(tmp_path, cfg)
+        train_proto = DataProto.from_dict(tensors={"z": torch.tensor([99.0])})
+        _write_valid_step_dump(root, 1, train_proto)
+
+        @SkipManager.annotate(role="rollout")
+        def gen(_self: Any, prompts: DataProto) -> DataProto:
+            return DataProto.from_dict(tensors={"z": torch.tensor([42.0])})
+
+        SkipManager.set_step(1)
+        val_batch = DataProto.from_dict(tensors={"z": torch.tensor([0.0])})
+        val_batch.meta_info = {"validate": True}
+        out = gen(None, val_batch)
+        assert out.batch["z"].item() == 42.0
+        loaded = DataProto.load_from_disk(root / "1" / "gen_batch.dp")
+        assert loaded.batch["z"].item() == 99.0
+
+    def test_annotate_async_validation_bypasses_cache_and_dump(self, tmp_path: Path):
+        cfg = _minimal_skip_cfg(str(tmp_path), enable=True, steps=[1], action="cache")
+        SkipManager.init(cfg)
+        root = _project_dump_root(tmp_path, cfg)
+        train_proto = DataProto.from_dict(tensors={"z": torch.tensor([99.0])})
+        _write_valid_step_dump(root, 1, train_proto)
+
+        @SkipManager.annotate(role="rollout")
+        async def gen(_self: Any, prompts: DataProto) -> DataProto:
+            return DataProto.from_dict(tensors={"z": torch.tensor([42.0])})
+
+        async def _run():
+            SkipManager.set_step(1)
+            val_batch = DataProto.from_dict(tensors={"z": torch.tensor([0.0])})
+            val_batch.meta_info = {"validate": True}
+            out = await gen(None, val_batch)
+            assert out.batch["z"].item() == 42.0
+            loaded = DataProto.load_from_disk(root / "1" / "gen_batch.dp")
+            assert loaded.batch["z"].item() == 99.0
+
+        asyncio.run(_run())
 
     def test_annotate_sync_cache_step_one(self, tmp_path: Path):
         cfg = _minimal_skip_cfg(str(tmp_path), enable=True, steps=[1], action="cache")
