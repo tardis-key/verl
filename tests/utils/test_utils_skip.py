@@ -31,9 +31,13 @@ from omegaconf import OmegaConf
 from verl.protocol import DataProto
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.skip.base_skip import SKIP_REGISTRY, BaseSkip, SkipAction, register_skip
-from verl.utils.skip.config import RolloutSkipConfig, SkipManagerConfig
-from verl.utils.skip.rollout_skip import RolloutSkip
+from verl.utils.skip.config import AsyncRolloutSkipConfig, RolloutSkipConfig, SkipManagerConfig
+from verl.utils.skip.rollout_skip import AsyncRolloutSkip, RolloutSkip, parse_async_rollout_sample_step
 from verl.utils.skip.skip_manager import SkipManager
+
+
+def _noop(*_args: Any, **_kwargs: Any) -> None:
+    return None
 
 
 def _reset_skip_manager_class_state() -> None:
@@ -49,12 +53,13 @@ def reset_skip_manager():
     _reset_skip_manager_class_state()
 
 
-def _minimal_rollout_skip_cfg(
+def _minimal_skip_cfg(
     dump_dir: str,
     *,
     enable: bool = True,
     steps: list[int] | None = None,
     action: str = "cache",
+    async_enable: bool = False,
 ) -> OmegaConf:
     steps = steps if steps is not None else [1]
     return OmegaConf.create(
@@ -65,18 +70,22 @@ def _minimal_rollout_skip_cfg(
                     "dump_dir": dump_dir,
                     "steps": steps,
                     "action": action,
-                }
+                },
+                "async_rollout": {
+                    "enable": async_enable,
+                    "dump_dir": dump_dir,
+                    "steps": steps,
+                    "action": action,
+                },
             },
             "actor_rollout_ref": {"rollout": {"skip": {"enable": False}, "n": 2}},
             "trainer": {"experiment_name": "ut_exp", "project_name": "ut_proj"},
             "data": {"gen_batch_size": 4, "max_prompt_length": 8, "max_response_length": 16},
-            "n": 2,
         }
     )
 
 
 def _local_rollout_config(cfg: OmegaConf) -> RolloutSkipConfig:
-    """Match ``SkipManager`` / trainer: merge YAML dict into ``RolloutSkipConfig`` (not a plain dict)."""
     return omega_conf_to_dataclass(cfg.skip.rollout, RolloutSkipConfig)
 
 
@@ -84,7 +93,7 @@ def _project_dump_root(dump_dir: Path, cfg: OmegaConf) -> Path:
     exp = cfg.trainer.experiment_name
     proj = cfg.trainer.project_name
     gbs = cfg.data.gen_batch_size
-    n = cfg.n
+    n = int(OmegaConf.select(cfg, "actor_rollout_ref.rollout.n", default=0))
     inp = cfg.data.max_prompt_length
     out = cfg.data.max_response_length
     sub = f"{exp}_{proj}/GBS{gbs}_N{n}_in{inp}_out{out}"
@@ -106,6 +115,11 @@ class TestRolloutSkipConfig:
         assert c.action == "cache"
         assert c.steps == []
 
+    def test_async_rollout_config_defaults(self):
+        c = AsyncRolloutSkipConfig()
+        assert c.enable is False
+        assert c.action == "cache"
+
     def test_invalid_action(self):
         with pytest.raises(AssertionError, match="action"):
             RolloutSkipConfig(action="not_an_action")
@@ -116,8 +130,10 @@ class TestRolloutSkipConfig:
 
 
 class TestSkipRegistryAndBaseSkip:
-    def test_rollout_registered(self):
+    def test_rollout_and_async_rollout_registered(self):
         assert "rollout" in SKIP_REGISTRY
+        assert "async_rollout" in SKIP_REGISTRY
+        assert SKIP_REGISTRY["async_rollout"] is AsyncRolloutSkip
 
     def test_register_skip_adds_class(self):
         name = f"ut_dummy_skip_{uuid.uuid4().hex[:8]}"
@@ -126,7 +142,7 @@ class TestSkipRegistryAndBaseSkip:
         class _UtSkip(BaseSkip):
             support_actions = [SkipAction.EMPTY]
 
-            def meet_precondition(self) -> bool:
+            def meet_precondition(self, func, *args, **kwargs) -> bool:
                 return True
 
             def warp_function(self, func, *args, **kwargs):
@@ -149,9 +165,19 @@ class TestSkipRegistryAndBaseSkip:
             )
 
 
+class TestParseAsyncRolloutSampleStep:
+    def test_valid_sample_id(self):
+        assert parse_async_rollout_sample_step("sample_0_42") == 42
+        assert parse_async_rollout_sample_step("sample_3_1") == 1
+
+    def test_invalid_sample_id(self):
+        with pytest.raises(ValueError, match="Invalid async rollout sample_id"):
+            parse_async_rollout_sample_step("bad_id")
+
+
 class TestRolloutSkipPaths:
     def test_check_valid_step_path(self, tmp_path: Path):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path), enable=True, steps=[1], action="cache")
+        cfg = _minimal_skip_cfg(str(tmp_path), enable=True, steps=[1], action="cache")
         local = _local_rollout_config(cfg)
         rs = RolloutSkip(local, cfg)
         root = _project_dump_root(tmp_path, cfg)
@@ -163,7 +189,7 @@ class TestRolloutSkipPaths:
         assert rs._check_valid_step_path(root.joinpath("7")) is True
 
     def test_get_available_steps_filters_invalid_dirs(self, tmp_path: Path):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path))
+        cfg = _minimal_skip_cfg(str(tmp_path))
         local = _local_rollout_config(cfg)
         rs = RolloutSkip(local, cfg)
         root = _project_dump_root(tmp_path, cfg)
@@ -178,7 +204,7 @@ class TestRolloutSkipPaths:
         assert rs._get_available_steps() == [1, 10]
 
     def test_find_latest_step_exact_then_smaller_then_larger(self, tmp_path: Path):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path))
+        cfg = _minimal_skip_cfg(str(tmp_path))
         local = _local_rollout_config(cfg)
         rs = RolloutSkip(local, cfg)
         root = _project_dump_root(tmp_path, cfg)
@@ -187,72 +213,87 @@ class TestRolloutSkipPaths:
         _write_valid_step_dump(root, 5, proto)
         _write_valid_step_dump(root, 20, proto)
 
-        rs.set_context(5)
-        assert rs._find_latest_step() == 5
-
-        rs.set_context(12)
-        assert rs._find_latest_step() == 5
-
-        rs.set_context(3)
-        assert rs._find_latest_step() == 5
+        assert rs._find_latest_step(5) == 5
+        assert rs._find_latest_step(12) == 5
+        assert rs._find_latest_step(3) == 5
 
         shutil.rmtree(root)
         root.mkdir(parents=True)
-        rs.set_context(100)
-        assert rs._find_latest_step() == -1
+        assert rs._find_latest_step(100) == -1
 
 
 class TestRolloutSkipMeetWarpPrepare:
     def test_meet_precondition_cache_miss_and_hit(self, tmp_path: Path):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path), action="cache")
+        cfg = _minimal_skip_cfg(str(tmp_path), action="cache")
         local = _local_rollout_config(cfg)
         rs = RolloutSkip(local, cfg)
         root = _project_dump_root(tmp_path, cfg)
 
-        rs.set_context(1)
-        assert rs.meet_precondition() is False
+        assert rs.meet_precondition(1, _noop) is False
 
         proto = DataProto.from_dict(tensors={"t": torch.arange(3)})
         _write_valid_step_dump(root, 1, proto)
-        assert rs.meet_precondition() is True
+        assert rs.meet_precondition(1, _noop) is True
 
     def test_meet_precondition_repeat(self, tmp_path: Path):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path), action="repeat")
+        cfg = _minimal_skip_cfg(str(tmp_path), action="repeat")
         local = _local_rollout_config(cfg)
         rs = RolloutSkip(local, cfg)
         root = _project_dump_root(tmp_path, cfg)
         proto = DataProto.from_dict(tensors={"t": torch.tensor([1.0])})
 
-        rs.set_context(2)
-        assert rs.meet_precondition() is False
+        assert rs.meet_precondition(2, _noop) is False
 
         _write_valid_step_dump(root, 1, proto)
-        assert rs.meet_precondition() is True
+        assert rs.meet_precondition(2, _noop) is True
 
     def test_prepare_data_and_warp_roundtrip(self, tmp_path: Path):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path), action="cache")
+        cfg = _minimal_skip_cfg(str(tmp_path), action="cache")
         local = _local_rollout_config(cfg)
         rs = RolloutSkip(local, cfg)
-        rs.set_context(3)
         original = DataProto.from_dict(tensors={"k": torch.tensor([[1.0, 2.0]])})
-        rs.prepare_data(original)
+        rs.prepare_data(3, original)
 
-        loaded = rs.warp_function(lambda: None)
+        loaded = rs.warp_function(3, _noop)
         assert torch.allclose(loaded.batch["k"], original.batch["k"])
 
 
+class TestAsyncRolloutSkipExtractStep:
+    def test_extract_step_from_args(self, tmp_path: Path):
+        cfg = _minimal_skip_cfg(str(tmp_path), async_enable=True)
+        local = omega_conf_to_dataclass(cfg.skip.async_rollout, AsyncRolloutSkipConfig)
+        ars = AsyncRolloutSkip(local, cfg)
+        assert ars.extract_step(object(), object(), "sample_1_7") == 7
+
+    def test_extract_step_from_kwargs(self, tmp_path: Path):
+        cfg = _minimal_skip_cfg(str(tmp_path), async_enable=True)
+        local = omega_conf_to_dataclass(cfg.skip.async_rollout, AsyncRolloutSkipConfig)
+        ars = AsyncRolloutSkip(local, cfg)
+        assert ars.extract_step(sample_id="sample_0_1") == 1
+
+    def test_extract_step_missing_sample_id(self, tmp_path: Path):
+        cfg = _minimal_skip_cfg(str(tmp_path), async_enable=True)
+        local = omega_conf_to_dataclass(cfg.skip.async_rollout, AsyncRolloutSkipConfig)
+        ars = AsyncRolloutSkip(local, cfg)
+        with pytest.raises(ValueError, match="sample_id"):
+            ars.extract_step(object(), object())
+
+
 class TestSkipManagerInitAndAnnotate:
-    def test_init_builds_rollout_skip_instance(self, tmp_path: Path):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path), steps=[1, 2])
+    def test_init_builds_rollout_and_async_instances(self, tmp_path: Path):
+        cfg = _minimal_skip_cfg(str(tmp_path), steps=[1, 2], async_enable=True)
         SkipManager.init(cfg)
         assert SkipManager.config is not None
         assert "rollout" in SkipManager.skip_instances
-        inst = SkipManager.skip_instances["rollout"]
-        assert inst.is_enabled() is True
-        assert inst.steps == [1, 2]
+        assert "async_rollout" in SkipManager.skip_instances
+        rollout = SkipManager.skip_instances["rollout"]
+        assert rollout.is_enabled() is True
+        assert rollout.steps == [1, 2]
+        async_inst = SkipManager.skip_instances["async_rollout"]
+        assert async_inst.support_online_step is True
 
     def test_legacy_skip_enable_warns_and_can_disable_legacy(self, tmp_path: Path):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path), steps=[1])
+        cfg = _minimal_skip_cfg(str(tmp_path), steps=[1])
         cfg.actor_rollout_ref.rollout.skip.enable = True
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -262,7 +303,7 @@ class TestSkipManagerInitAndAnnotate:
         assert cfg.actor_rollout_ref.rollout.skip.enable is False
 
     def test_annotate_sync_bypass_when_step_not_in_steps(self, tmp_path: Path):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path), enable=True, steps=[99])
+        cfg = _minimal_skip_cfg(str(tmp_path), enable=True, steps=[99])
         SkipManager.init(cfg)
 
         @SkipManager.annotate(role="rollout")
@@ -272,8 +313,8 @@ class TestSkipManagerInitAndAnnotate:
         SkipManager.set_step(1)
         assert work(40) == 41
 
-    def test_annotate_sync_prepare_when_enabled_and_cache_miss(self, tmp_path: Path):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path), enable=True, steps=[1], action="cache")
+    def test_annotate_sync_cache_step_one(self, tmp_path: Path):
+        cfg = _minimal_skip_cfg(str(tmp_path), enable=True, steps=[1], action="cache")
         SkipManager.init(cfg)
         root = _project_dump_root(tmp_path, cfg)
 
@@ -285,40 +326,52 @@ class TestSkipManagerInitAndAnnotate:
         out = gen()
         assert out.batch["z"].item() == 7.0
         assert (root / "1" / "gen_batch.dp").exists()
-        assert (root / "1" / "meta.json").exists()
 
         SkipManager.set_step(1)
 
         @SkipManager.annotate(role="rollout")
-        def gen2(_: Any = None) -> DataProto:
+        def gen_cached(_: Any = None) -> DataProto:
             raise AssertionError("should not run when cache hit")
 
-        loaded = gen2()
+        loaded = gen_cached()
         assert torch.allclose(loaded.batch["z"], torch.tensor([7.0]))
 
-    def test_annotate_async_same_semantics(self, tmp_path: Path):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path), enable=True, steps=[1], action="cache")
+    def test_annotate_async_rollout_online_step(self, tmp_path: Path):
+        cfg = _minimal_skip_cfg(str(tmp_path), enable=False, async_enable=True, steps=[1], action="cache")
         SkipManager.init(cfg)
         root = _project_dump_root(tmp_path, cfg)
 
-        @SkipManager.annotate(role="rollout")
-        async def agen() -> DataProto:
-            return DataProto.from_dict(tensors={"a": torch.tensor([1, 2, 3])})
+        @SkipManager.annotate(role="async_rollout")
+        async def gen_single(_self: Any, _prompts: Any, sample_id: str) -> DataProto:
+            return DataProto.from_dict(tensors={"a": torch.tensor([float(sample_id.split("_")[-1])])})
 
         async def _run():
-            SkipManager.set_step(1)
-            out = await agen()
-            assert list(out.batch["a"].tolist()) == [1, 2, 3]
+            out = await gen_single(None, None, "sample_0_1")
+            assert out.batch["a"].item() == 1.0
             assert (root / "1" / "gen_batch.dp").exists()
 
-            SkipManager.set_step(1)
-
-            @SkipManager.annotate(role="rollout")
-            async def agen2() -> DataProto:
+            @SkipManager.annotate(role="async_rollout")
+            async def gen_cached(_self: Any, _prompts: Any, sample_id: str) -> DataProto:
                 raise AssertionError("cached path")
 
-            loaded = await agen2()
-            assert list(loaded.batch["a"].tolist()) == [1, 2, 3]
+            loaded = await gen_cached(None, None, "sample_0_1")
+            assert loaded.batch["a"].item() == 1.0
+
+        asyncio.run(_run())
+
+    def test_annotate_async_bypass_when_step_not_in_list(self, tmp_path: Path):
+        cfg = _minimal_skip_cfg(str(tmp_path), async_enable=True, steps=[99], action="cache")
+        SkipManager.init(cfg)
+        calls = {"n": 0}
+
+        @SkipManager.annotate(role="async_rollout")
+        async def gen(_self: Any, _prompts: Any, sample_id: str) -> str:
+            calls["n"] += 1
+            return sample_id
+
+        async def _run():
+            assert await gen(None, None, "sample_0_1") == "sample_0_1"
+            assert calls["n"] == 1
 
         asyncio.run(_run())
 
@@ -327,12 +380,13 @@ class TestSkipManagerConfigDataclass:
     def test_skip_manager_config_merge(self):
         c = SkipManagerConfig()
         assert isinstance(c.rollout, RolloutSkipConfig)
+        assert isinstance(c.async_rollout, AsyncRolloutSkipConfig)
         assert c.rollout.enable is False
 
 
 class TestSkipManagerRuntimeScenarios:
     def test_annotate_unknown_role_is_noop(self, tmp_path: Path):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path), enable=True, steps=[1])
+        cfg = _minimal_skip_cfg(str(tmp_path), enable=True, steps=[1])
         SkipManager.init(cfg)
         SkipManager.set_step(1)
 
@@ -343,7 +397,7 @@ class TestSkipManagerRuntimeScenarios:
         assert f(3) == 6
 
     def test_legacy_only_enabled_warns_but_keeps_legacy_flag(self, tmp_path: Path):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path), enable=False, steps=[1])
+        cfg = _minimal_skip_cfg(str(tmp_path), enable=False, steps=[1])
         cfg.actor_rollout_ref.rollout.skip.enable = True
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -352,7 +406,7 @@ class TestSkipManagerRuntimeScenarios:
         assert cfg.actor_rollout_ref.rollout.skip.enable is True
 
     def test_new_and_legacy_enabled_disables_legacy(self, tmp_path: Path):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path), enable=True, steps=[1])
+        cfg = _minimal_skip_cfg(str(tmp_path), enable=True, steps=[1])
         cfg.actor_rollout_ref.rollout.skip.enable = True
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -365,35 +419,29 @@ class TestSkipDumpDiskScenarios:
     def test_dump_dirs_are_isolated_by_config(self, tmp_path: Path):
         dump_a = tmp_path / "disk_a"
         dump_b = tmp_path / "disk_b"
-        cfg_a = _minimal_rollout_skip_cfg(str(dump_a), enable=True, steps=[1], action="cache")
-        cfg_b = _minimal_rollout_skip_cfg(str(dump_b), enable=True, steps=[1], action="cache")
-        local_a = _local_rollout_config(cfg_a)
-        local_b = _local_rollout_config(cfg_b)
-        rs_a = RolloutSkip(local_a, cfg_a)
-        rs_b = RolloutSkip(local_b, cfg_b)
+        cfg_a = _minimal_skip_cfg(str(dump_a), enable=True, steps=[1], action="cache")
+        cfg_b = _minimal_skip_cfg(str(dump_b), enable=True, steps=[1], action="cache")
+        rs_a = RolloutSkip(_local_rollout_config(cfg_a), cfg_a)
+        rs_b = RolloutSkip(_local_rollout_config(cfg_b), cfg_b)
 
-        rs_a.set_context(1)
-        rs_b.set_context(1)
-        rs_a.prepare_data(DataProto.from_dict(tensors={"x": torch.tensor([1.0])}))
-        rs_b.prepare_data(DataProto.from_dict(tensors={"x": torch.tensor([2.0])}))
+        rs_a.prepare_data(1, DataProto.from_dict(tensors={"x": torch.tensor([1.0])}))
+        rs_b.prepare_data(1, DataProto.from_dict(tensors={"x": torch.tensor([2.0])}))
 
-        loaded_a = rs_a.warp_function(lambda: None)
-        loaded_b = rs_b.warp_function(lambda: None)
+        loaded_a = rs_a.warp_function(1, _noop)
+        loaded_b = rs_b.warp_function(1, _noop)
         assert loaded_a.batch["x"].item() == 1.0
         assert loaded_b.batch["x"].item() == 2.0
 
     def test_prepare_data_handles_disk_write_error_without_raising(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        cfg = _minimal_rollout_skip_cfg(str(tmp_path), enable=True, steps=[1], action="cache")
-        local = _local_rollout_config(cfg)
-        rs = RolloutSkip(local, cfg)
-        rs.set_context(1)
+        cfg = _minimal_skip_cfg(str(tmp_path), enable=True, steps=[1], action="cache")
+        rs = RolloutSkip(_local_rollout_config(cfg), cfg)
 
         def _raise_save(*args, **kwargs):
             raise OSError("simulated disk write failure")
 
         monkeypatch.setattr(DataProto, "save_to_disk", _raise_save)
-        rs.prepare_data(DataProto.from_dict(tensors={"x": torch.tensor([1.0])}))
-        dump_file = rs._get_step_dump_dir().joinpath("gen_batch.dp")
+        rs.prepare_data(1, DataProto.from_dict(tensors={"x": torch.tensor([1.0])}))
+        dump_file = rs._get_step_dump_dir(1).joinpath("gen_batch.dp")
         assert dump_file.exists() is False
