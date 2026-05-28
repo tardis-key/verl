@@ -1,7 +1,10 @@
-SkipManager Usage Documentation
-=================================
+SkipManager: Skip everything in the RL pipeline.
+===========
 
 Last updated: 2026-05-23
+
+.. contents:: :local:
+   :depth: 1
 
 1. Overview
 -----------
@@ -15,7 +18,7 @@ Skip behavior is centralized under the top-level Hydra key ``skip``. Modules reg
 (for example ``"rollout"`` or ``"async_rollout"``) and are attached with
 ``@SkipManager.annotate(role=...)``. Each role declares which integer **steps** in config are
 eligible for skip logic. **Today only rollout-related roles are implemented**; the same mechanism
-can be extended to other pipeline stages (see section 4).
+can be extended to other pipeline stages (see section 5).
 
 Typical use cases
 ~~~~~~~~~~~~~~~~~
@@ -47,7 +50,7 @@ Supported entry points today
      - **Supported**
    * - ``main_ppo_sync.py`` (TransferQueue + ReplayBuffer)
      - ``skip.rollout``
-     - **Not supported** (see section 2)
+     - **Not supported** (see section 3)
    * - ``fully_async_main`` (``FullyAsyncRollouter``)
      - ``skip.async_rollout``
      - **Supported**
@@ -56,45 +59,80 @@ Supported entry points today
 
    The legacy utility ``verl.utils.rollout_skip.RolloutSkip`` (patching ``generate_sequences`` via
    ``actor_rollout_ref.rollout.skip``) is **deprecated** and will be removed after a compatibility
-   window. New code and configs should use SkipManager. See :doc:`rollout_skip` for historical
-   reference.
+   window. New code and configs should use SkipManager. See :doc:`advance/rollout_skip` for
+   historical reference.
 
 
-2. Rollout Skip Quick Start (``rollout`` role)
-----------------------------------------------
+2. Shared configuration (``skip.rollout`` / ``skip.async_rollout``)
+---------------------------------------------------------------------
 
-Use ``skip.rollout`` when training with ``main_ppo.py`` / ``RayPPOTrainer`` and the standard
-``AgentLoopManager.generate_sequences`` path.
+Both roles use the same Hydra fields (``RolloutSkipConfig`` / ``AsyncRolloutSkipConfig`` in
+``verl/utils/skip/config.py``). Defaults live in ``verl/trainer/config/ppo_trainer.yaml`` under
+``skip.rollout`` and ``skip.async_rollout``.
 
-Configuration
-~~~~~~~~~~~~~
+Parameters
+~~~~~~~~~~
 
-Trainer YAML reserves a ``skip.rollout`` block (see ``verl/trainer/config/ppo_trainer.yaml``).
-Override via Hydra CLI:
+- **enable** (bool): Master switch for this role.
+- **dump_dir** (str): Root directory for cached ``DataProto`` shards (``~`` is expanded).
+- **steps** (list[int]): Steps on which skip logic is *eligible*. Outside this list, the decorated
+  function always runs normally.
+
+  - For ``skip.rollout``: trainer **global_steps** (via ``SkipManager.set_step``).
+  - For ``skip.async_rollout``: the feed-order index parsed from ``sample_id`` (see section 4) —
+    **not** trainer ``global_steps``.
+
+- **action** (``cache`` \| ``repeat``):
+
+  - **cache**: If a valid dump exists for the current step, load it and skip generation; otherwise
+    run generation and write under that step directory.
+  - **repeat**: If any valid dump exists, load from a **substitute** step chosen by the algorithm
+    below; otherwise run generation and dump as usual.
+
+.. note::
+
+   Only ``cache`` and ``repeat`` are validated in config today, even though ``SkipAction`` in
+   ``verl.utils.skip.base_skip`` lists additional enum values for future modules.
+
+``repeat`` step selection (``RolloutSkip._find_latest_step``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When ``action=repeat`` and the current step directory is missing or incomplete:
+
+1. If the directory for the **current** step is valid, use the current step.
+2. Else use the **largest** available step **strictly less than** the current step.
+3. Else use the **smallest** available step **strictly greater than** the current step.
+4. If no valid dump exists, skip does not apply: the wrapped function runs and may dump afterward.
+
+``repeat`` does **not** guarantee the cached batch matches the current prompt or trainer step—use
+it for debugging and iteration, and prefer ``cache`` when you need step-aligned replay.
+
+Hydra CLI examples
+~~~~~~~~~~~~~~~~~~
+
+Colocated PPO (``skip.rollout``):
 
 .. code-block:: bash
 
    skip.rollout.enable=True
    skip.rollout.dump_dir=/path/to/rollout_dump
-   skip.rollout.steps='[1,2,3,10]'
+   skip.rollout.steps=[1,2,3,10]
    skip.rollout.action=cache
 
-Parameters (``skip.rollout`` / ``RolloutSkipConfig``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Fully async (``skip.async_rollout``):
 
-- **enable** (bool): Master switch for rollout skip.
-- **dump_dir** (str): Root directory for cached ``DataProto`` shards (``~`` is expanded).
-- **steps** (list[int]): Trainer **global_steps** on which skip logic is *eligible*. Outside this
-  set, the decorated function always runs normally.
-- **action** (``cache`` \| ``repeat``):
+.. code-block:: bash
 
-  - ``cache``: load or write under the exact step directory for the current trainer step.
-  - ``repeat``: reuse the nearest available cached step (see ``RolloutSkip._find_latest_step``).
+   skip.async_rollout.enable=True
+   skip.async_rollout.dump_dir=/path/to/rollout_dump
+   skip.async_rollout.steps=[1,2,3,4,5]
+   skip.async_rollout.action=cache
 
-.. note::
+To pass a long step list from **bash** only (not valid inside static YAML):
 
-   Only ``cache`` and ``repeat`` are validated in ``RolloutSkipConfig`` today, even though
-   ``SkipAction`` in code lists additional enum values for future modules.
+.. code-block:: bash
+
+   skip.async_rollout.steps="[$(seq -s, 1 128)]"
 
 On-disk layout
 ~~~~~~~~~~~~~~
@@ -103,10 +141,29 @@ On-disk layout
 
    {dump_dir}/{experiment_name}_{project_name}/
        └── GBS{gbs}_N{n}_in{prompt_len}_out{response_len}/
-           ├── {global_step}/
+           ├── {step}/
            │   ├── gen_batch.dp
            │   └── meta.json
            └── ...
+
+- **experiment_name** / **project_name**: from ``trainer.experiment_name`` and
+  ``trainer.project_name`` in the run config.
+- **gbs**, **n**, **prompt_len**, **response_len**: from ``data.gen_batch_size`` (or train batch
+  size), ``actor_rollout_ref.rollout.n``, ``data.max_prompt_length``, and
+  ``data.max_response_length``.
+
+Caches from colocated ``main_ppo`` (larger **GBS**) and fully async streaming (typically **GBS=1**)
+are generally **not** interchangeable unless these metadata match.
+
+Minimal workflow (``cache``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. **First run** with ``enable=True``, ``action=cache``, and ``steps`` listing the steps you care
+   about. Empty ``dump_dir`` → generation runs and writes ``gen_batch.dp`` + ``meta.json`` per step.
+2. **Second run** with the same config and compatible trainer metadata → listed steps load from
+   disk instead of regenerating.
+3. **Partial caches** (some step dirs missing): those steps regenerate on the next run; other steps
+   still load if present.
 
 Relationship to legacy RolloutSkip
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -115,12 +172,17 @@ If **both** ``skip.rollout.enable`` and legacy ``actor_rollout_ref.rollout.skip.
 SkipManager emits a ``DeprecationWarning`` and **forces** the legacy flag to ``False`` so only one
 mechanism runs.
 
-``main_ppo.py`` vs ``main_ppo_sync.py``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+3. Rollout quick start (``rollout`` role)
+-----------------------------------------
+
+Use ``skip.rollout`` when training with ``main_ppo.py`` / ``RayPPOTrainer`` and the standard
+``AgentLoopManager.generate_sequences`` path. Configuration fields and ``cache`` / ``repeat``
+semantics are in section 2.
 
 **``main_ppo.py`` (supported)**
 
-- ``RayPPOTrainer.fit()`` calls ``SkipManager.init(self.config)`` and updates
+- ``RayPPOTrainer.fit()`` calls ``SkipManager.init(self.config)`` and
   ``SkipManager.set_step(self.global_steps)`` each training step.
 - ``AgentLoopManager.generate_sequences`` is decorated with
   ``@SkipManager.annotate(role="rollout")``.
@@ -136,76 +198,42 @@ downstream training loop that consumes data from TQ.
 
 Decoupling “generate” from “enqueue to TQ” is non-trivial under the current design, so SkipManager
 adaptation for ``main_ppo_sync`` is **deferred** until the TransferQueue-based training path is
-further stabilized; a compatible hook can be added then without conflating skip with queue
-bookkeeping.
+further stabilized.
 
 
-3. Fully Async Quick Start (``async_rollout`` role)
+4. Fully async quick start (``async_rollout`` role)
 ---------------------------------------------------
 
-In :doc:`fully_async`, Trainer and Rollouter run in separate processes. Rollout generation happens
-on the Rollouter via streaming single-sample dispatch. Use ``skip.async_rollout`` (not
-``skip.rollout``) when launching ``fully_async_main``.
-
-Configuration
-~~~~~~~~~~~~~
-
-``verl/trainer/config/ppo_trainer.yaml`` defines ``skip.async_rollout`` with the same fields as
-``skip.rollout``. Example overrides:
-
-.. code-block:: bash
-
-   skip.async_rollout.enable=True
-   skip.async_rollout.dump_dir=/path/to/rollout_dump
-   skip.async_rollout.steps="[$(seq -s, 1 128)]"
-   skip.async_rollout.action=cache
-
-Parameters (``skip.async_rollout`` / ``AsyncRolloutSkipConfig``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Same semantics as ``skip.rollout`` (``enable``, ``dump_dir``, ``steps``, ``action``), with one
-critical difference for **steps**:
-
-- **steps** refers to the integer embedded in each sample's ``sample_id`` (see below), **not**
-  Trainer ``global_steps`` or ``current_param_version``.
+In :doc:`advance/fully_async`, Trainer and Rollouter run in separate processes. Rollout generation
+happens on the Rollouter via streaming single-sample dispatch. Use ``skip.async_rollout`` (not
+``skip.rollout``) when launching ``fully_async_main``. Shared Hydra fields and on-disk layout are
+in section 2.
 
 .. important::
 
-   In ``async_rollout``, a step is **not** the real training-step timeline. It is only the
-   **prompt request / feed order** on the Rollouter: the monotonic index assigned when
-   ``FullyAsyncRollouter`` enqueues the next prompt (``sample_{epoch}_{index}``). Under concurrent
-   rollout, completion order can differ from feed order; do not treat these indices as Trainer step
-   numbers or parameter-sync boundaries when configuring ``skip.async_rollout.steps``.
+   In ``async_rollout``, a step is **not** the trainer timeline. It is only the **prompt request /
+   feed order** on the Rollouter: the monotonic index in ``sample_{epoch}_{index}`` when
+   ``FullyAsyncRollouter`` enqueues the next prompt. Under concurrent rollout, completion order can
+   differ from feed order; do not treat these indices as trainer ``global_steps`` or parameter-sync
+   boundaries when configuring ``skip.async_rollout.steps``.
 
 Step key from ``sample_id``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Each fed sample carries an id of the form ``sample_{epoch}_{index}`` (for example
 ``sample_0_42``). The integer matched against ``skip.async_rollout.steps`` and used for on-disk
-directories is the **last segment** — Rollouter feed-order index at enqueue time (field name
-``global_steps`` in code is historical naming for this counter).
+directories is the **last segment** — Rollouter feed-order index at enqueue time.
 
-On-disk layout
-~~~~~~~~~~~~~~
+**Wiring**
 
-Uses the same tree as ``rollout``, but ``GBS`` comes from ``data.gen_batch_size``. In fully async
-runs this is typically **1** (streaming single-prompt generation). Caches from colocate /
-``main_ppo.py`` runs (larger ``GBS``) are generally **not** interchangeable unless batch metadata
-matches.
-
-``cache`` vs ``repeat`` notes
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-- ``cache``: load or write under the exact rollouter step directory.
-- ``repeat``: with streaming one-sample rollout, verify the loaded cache matches the intended
-  prompt when debugging; nearest-step reuse may not correspond to the current prompt.
+- ``FullyAsyncRollouter`` calls ``SkipManager.init(self.config)`` in the Rollouter process.
+- ``FullyAsyncAgentLoopManager.generate_sequences_single`` is decorated with
+  ``@SkipManager.annotate(role="async_rollout")`` and receives ``sample_id`` for online step
+  resolution.
 
 
-4. Design and Implementation
+5. Design and implementation
 ----------------------------
-
-This section describes the SkipManager / BaseSkip contract, which functions are intercepted, and
-why ``support_online_step`` exists.
 
 SkipManager API
 ~~~~~~~~~~~~~~~
@@ -213,29 +241,32 @@ SkipManager API
 ``SkipManager`` (``verl.utils.skip.skip_manager``) is a class-level registry:
 
 - **``init(config)``**: Parse ``config.skip`` into ``SkipManagerConfig``, instantiate one skip module
-  per registered role (``rollout``, ``async_rollout``, …), and store them in
-  ``SkipManager.skip_instances``.
-- **``set_step(step: int)``**: Set the shared class attribute ``SkipManager.step``. Used by
-  ``RayPPOTrainer`` to publish the current trainer ``global_steps`` before each rollout call.
-- **``annotate(role, **kwargs)``**: Decorator factory. Wraps a sync or async function with the skip
-  decision flow described below.
+  per registered role, and store them in ``SkipManager.skip_instances``.
+- **``set_step(step: int)``**: Set ``SkipManager.step`` for roles with ``support_online_step =
+  False`` (trainer ``global_steps`` in ``main_ppo``).
+- **``annotate(role, **kwargs)``**: Decorator factory for sync or async functions.
 
-Decorator flow (``@SkipManager.annotate``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Decorator flow
+~~~~~~~~~~~~~~
 
-For each call to a decorated function:
+.. code-block:: text
 
-1. Look up ``skip_instances[role]``; if missing or disabled, call through unchanged.
-2. Resolve **step**:
-
-   - If ``skip_instance.support_online_step`` is ``True``: call
-     ``skip_instance.extract_step(*args, **kwargs)`` (per-call, from arguments).
-   - Else: use ``SkipManager.step`` (class-level, set by trainer).
-3. If ``step not in skip_instance.steps``, call through unchanged.
-4. If ``meet_precondition(step, func, *args, **kwargs)`` is true, return
-   ``warp_function(step, func, *args, **kwargs)`` (load cache / repeat).
-5. Otherwise execute the real function, then ``prepare_data(step, result, *args, **kwargs)`` to
-   dump when appropriate.
+   call decorated function
+        │
+        ▼
+   skip disabled or role missing? ──yes──► run original function
+        │no
+        ▼
+   resolve step (set_step vs extract_step)
+        │
+        ▼
+   step ∉ config.steps? ──yes──► run original function
+        │no
+        ▼
+   meet_precondition (cache/repeat)? ──yes──► warp_function (load cache)
+        │no
+        ▼
+   run original function → prepare_data (dump)
 
 BaseSkip interface
 ~~~~~~~~~~~~~~~~~~
@@ -243,25 +274,15 @@ BaseSkip interface
 Each skip module subclasses ``BaseSkip`` (``verl.utils.skip.base_skip``) and registers via
 ``@register_skip("role_name")``.
 
-Class attributes:
-
 - **``support_actions``**: Allowed ``SkipAction`` values for this module.
-- **``support_online_step``** (default ``False``): When ``True``, step is taken from call arguments
-  via ``extract_step`` instead of ``SkipManager.step``.
+- **``support_online_step``**: When ``True``, use ``extract_step`` per call instead of
+  ``SkipManager.step``.
 
-Instance methods (subclasses implement the rollout-specific logic):
+Instance methods: ``is_enabled``, ``meet_precondition``, ``warp_function``, ``prepare_data``, and
+``extract_step`` (required when ``support_online_step`` is ``True``).
 
-- **``is_enabled()``**: Whether ``enable`` is set in config.
-- **``meet_precondition(step, func, *args, **kwargs)``**: Whether cached data exists for the chosen
-  action (``cache`` / ``repeat``).
-- **``warp_function(step, func, *args, **kwargs)``**: Return cached ``DataProto`` without calling
-  the wrapped function.
-- **``prepare_data(step, result, *args, **kwargs)``**: Persist ``result`` after a real execution.
-- **``extract_step(*args, **kwargs)``**: Required when ``support_online_step`` is ``True``; parse
-  step from decorated call arguments.
-
-``RolloutSkip`` / ``AsyncRolloutSkip`` (``verl.utils.skip.rollout_skip``) implement the above for
-generation caching. Both register under different role names but share dump layout helpers.
+``RolloutSkip`` / ``AsyncRolloutSkip`` (``verl.utils.skip.rollout_skip``) implement generation
+caching for the ``rollout`` and ``async_rollout`` roles.
 
 Intercepted functions
 ~~~~~~~~~~~~~~~~~~~~~
@@ -283,59 +304,35 @@ Intercepted functions
      - ``verl/experimental/fully_async_policy/fully_async_rollouter.py``
      - ``extract_step`` → ``sample_id`` suffix → **prompt feed order**
 
-**``rollout``**: wraps the full batch Agent Loop RPC — chunk dispatch to workers, concat, and
-timing aggregation — as a single skip unit.
+**``rollout``** wraps the full batch Agent Loop RPC (chunk dispatch, concat, timing) as one skip
+unit.
 
-**``async_rollout``**: wraps one streaming sample's ``generate_sequences_single(self, prompts,
-sample_id)`` RPC (worker selection + remote ``generate_sequences``), including the ``sample_id``
-argument required for online step resolution.
+**``async_rollout``** wraps one streaming sample's ``generate_sequences_single(self, prompts,
+sample_id)`` so concurrent samples resolve step independently.
 
 Step resolution: ``set_step`` vs ``support_online_step``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Skip modules need an integer **step** to match against ``skip.<role>.steps``. verl provides two
-ways to supply it; choosing the wrong one leads to incorrect skip behavior.
+See section 2 for ``steps`` semantics per role.
 
-**Shared step — ``SkipManager.set_step``**
-
-- ``SkipManager.step`` is the **only class-level step slot** in a process. Every ``BaseSkip``
-  subclass with ``support_online_step = False`` reads the same value.
-- This fits **sequential** loops (e.g. ``main_ppo.py``): the trainer calls ``set_step(global_steps)``
-  once per training step, then ``generate_sequences`` runs before the next update.
-- **Limitation of the current design**: if two or more skip roles in the **same process** need
-  **different** step counters at overlapping times (trainer step vs rollouter feed step, or two
-  stages updated on different schedules), they cannot both use ``SkipManager.step`` reliably —
-  whichever ``set_step`` ran last wins, and in-flight decorated calls may observe the wrong step.
-
-**Per-call step — ``support_online_step`` + ``extract_step``**
-
-- When ``support_online_step = True``, the decorator ignores ``SkipManager.step`` and calls
-  ``extract_step(*args, **kwargs)`` on **each** invocation to derive step from runtime arguments.
-- This is better for **concurrent** execution: on the Rollouter, multiple samples can be in flight
-  (streaming feed + async tasks). A shared ``SkipManager.step`` would race, and instance fields such
-  as ``RolloutSkip.lastest_step`` (used by ``repeat``) can conflict across overlapping requests.
-- ``AsyncRolloutSkip`` uses this path: ``extract_step`` parses the feed-order index from
-  ``sample_id`` on each ``generate_sequences_single(self, prompts, sample_id)`` call (third
-  positional argument or ``sample_id=`` keyword), so concurrent samples resolve step independently.
-  That index reflects **prompt submission order**, not Trainer ``global_steps`` or generation
-  finish order.
-
-Fully async therefore uses ``async_rollout`` with online step — for concurrency, and because the
-skip key is the Rollouter feed counter rather than the Trainer step counter.
+- **Shared ``SkipManager.step``**: One class-level slot per process. Fits sequential trainer loops
+  (``main_ppo``): ``set_step(global_steps)`` before rollout.
+- **Online step**: ``AsyncRolloutSkip`` sets ``support_online_step = True`` and parses
+  ``sample_id`` on each call so in-flight async samples do not share a single counter. Instance
+  state used by ``repeat`` is resolved per call.
 
 Extending with custom skip modules
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 1. Subclass ``BaseSkip`` from ``verl.utils.skip.base_skip``.
 2. Decorate the class with ``@register_skip("your_role_name")``.
-3. Add a matching field under ``SkipManagerConfig`` so ``SkipManager.init`` can construct your
-   module from ``config.skip``.
-4. Attach ``@SkipManager.annotate(role="your_role_name")`` on the function you want to intercept.
-   If the training loop is concurrent, prefer ``support_online_step = True`` and pass step identity
-   through call arguments rather than ``SkipManager.set_step``.
+3. Add a matching field under ``SkipManagerConfig``.
+4. Attach ``@SkipManager.annotate(role="your_role_name")``. For concurrent pipelines, prefer
+   ``support_online_step = True`` and pass step identity through call arguments.
+
 
 Further reading
 ---------------
 
-- Legacy rollout skip (deprecated): :doc:`rollout_skip`
-- Fully async training: :doc:`fully_async`
+- Legacy rollout skip (deprecated): :doc:`advance/rollout_skip`
+- Fully async training: :doc:`advance/fully_async`
