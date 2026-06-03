@@ -64,7 +64,6 @@ from verl.utils.debug import marked_timer
 from verl.utils.import_utils import deprecated, load_class_from_fqn
 from verl.utils.metric import reduce_metrics
 from verl.utils.py_functional import rename_dict
-from verl.utils.rollout_skip import RolloutSkip
 from verl.utils.seqlen_balancing import calculate_workload, get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.skip.skip_manager import SkipManager
 from verl.utils.torch_functional import masked_mean
@@ -1401,10 +1400,6 @@ class RayPPOTrainer:
             if self.config.trainer.get("val_only", False):
                 self._shutdown_dump_executor()
                 return
-
-        if self.config.actor_rollout_ref.rollout.skip.get("enable", False):
-            rollout_skip = RolloutSkip(self.config, self.async_rollout_manager)
-            rollout_skip.wrap_generate_sequences()
 
         # add tqdm
         progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")

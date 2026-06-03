@@ -55,13 +55,6 @@ Supported entry points today
      - ``skip.async_rollout``
      - **Supported**
 
-.. important::
-
-   The legacy utility ``verl.utils.rollout_skip.RolloutSkip`` (patching ``generate_sequences`` via
-   ``actor_rollout_ref.rollout.skip``) is **deprecated** and will be removed after a compatibility
-   window. New code and configs should use SkipManager. See :doc:`advance/rollout_skip` for
-   historical reference.
-
 
 2. Shared configuration (``skip.rollout`` / ``skip.async_rollout``)
 ---------------------------------------------------------------------
@@ -330,10 +323,3 @@ Extending with custom skip modules
 3. Add a matching field under ``SkipManagerConfig``.
 4. Attach ``@SkipManager.annotate(role="your_role_name")``. For concurrent pipelines, prefer
    ``support_online_step = True`` and pass step identity through call arguments.
-
-
-Further reading
----------------
-
-- Legacy rollout skip (deprecated): :doc:`advance/rollout_skip`
-- Fully async training: :doc:`advance/fully_async`

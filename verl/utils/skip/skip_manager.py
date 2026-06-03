@@ -14,10 +14,7 @@
 
 import functools
 import inspect
-import warnings
 from typing import Callable
-
-from omegaconf import OmegaConf
 
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.skip.base_skip import SKIP_REGISTRY
@@ -40,25 +37,7 @@ class SkipManager:
 
     @classmethod
     def init(cls, config):
-        legacy_skip_enable = OmegaConf.select(config, "actor_rollout_ref.rollout.skip.enable", default=False)
-        if legacy_skip_enable:
-            warnings.warn(
-                ("`actor_rollout_ref.rollout.skip` is deprecated. Please migrate to `skip.rollout`."),
-                DeprecationWarning,
-                stacklevel=2,
-            )
         cls.config = omega_conf_to_dataclass(config.skip, dataclass_type=SkipManagerConfig)
-        if cls.config.rollout.enable and legacy_skip_enable:
-            warnings.warn(
-                (
-                    "Both `skip.rollout.enable` and legacy "
-                    "`actor_rollout_ref.rollout.skip.enable` are enabled. "
-                    "Legacy rollout skip is deprecated and will be disabled automatically."
-                ),
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            config.actor_rollout_ref.rollout.skip.enable = False
         cls.step = -1
         cls.skip_instances = {}
         for name, skip_cls in SKIP_REGISTRY.items():
