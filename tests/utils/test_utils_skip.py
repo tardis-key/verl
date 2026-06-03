@@ -24,6 +24,7 @@ import warnings
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 import torch
 from omegaconf import OmegaConf
@@ -170,6 +171,10 @@ class TestParseAsyncRolloutSampleStep:
         assert parse_async_rollout_sample_step("sample_0_42") == 42
         assert parse_async_rollout_sample_step("sample_3_1") == 1
 
+    def test_valid_uid_prefixed_sample_id(self):
+        assert parse_async_rollout_sample_step("uid_sample_0_42") == 42
+        assert parse_async_rollout_sample_step("uid_sample_3_1") == 1
+
     def test_invalid_sample_id(self):
         with pytest.raises(ValueError, match="Invalid async rollout sample_id"):
             parse_async_rollout_sample_step("bad_id")
@@ -292,24 +297,29 @@ class TestRolloutSkipMeetWarpPrepare:
 
 
 class TestAsyncRolloutSkipExtractStep:
-    def test_extract_step_from_args(self, tmp_path: Path):
+    def test_extract_step_from_prompts_uid(self, tmp_path: Path):
         cfg = _minimal_skip_cfg(str(tmp_path), async_enable=True)
         local = omega_conf_to_dataclass(cfg.skip.async_rollout, AsyncRolloutSkipConfig)
         ars = AsyncRolloutSkip(local, cfg)
-        assert ars.extract_step(object(), object(), "sample_1_7") == 7
+        prompts = DataProto.from_dict(tensors={"x": torch.zeros(1)})
+        prompts.non_tensor_batch["uid"] = np.array(["uid_sample_1_7"], dtype=object)
+        assert ars.extract_step(object(), prompts) == 7
 
-    def test_extract_step_from_kwargs(self, tmp_path: Path):
+    def test_extract_step_from_kwargs_prompts(self, tmp_path: Path):
         cfg = _minimal_skip_cfg(str(tmp_path), async_enable=True)
         local = omega_conf_to_dataclass(cfg.skip.async_rollout, AsyncRolloutSkipConfig)
         ars = AsyncRolloutSkip(local, cfg)
-        assert ars.extract_step(sample_id="sample_0_1") == 1
+        prompts = DataProto.from_dict(tensors={"x": torch.zeros(1)})
+        prompts.non_tensor_batch["uid"] = np.array(["uid_sample_0_1"], dtype=object)
+        assert ars.extract_step(prompts=prompts) == 1
 
-    def test_extract_step_missing_sample_id(self, tmp_path: Path):
+    def test_extract_step_missing_uid(self, tmp_path: Path):
         cfg = _minimal_skip_cfg(str(tmp_path), async_enable=True)
         local = omega_conf_to_dataclass(cfg.skip.async_rollout, AsyncRolloutSkipConfig)
         ars = AsyncRolloutSkip(local, cfg)
-        with pytest.raises(ValueError, match="sample_id"):
-            ars.extract_step(object(), object())
+        prompts = DataProto.from_dict(tensors={"x": torch.zeros(1)})
+        with pytest.raises(ValueError, match="uid"):
+            ars.extract_step(object(), prompts)
 
 
 class TestSkipManagerInitAndAnnotate:
@@ -422,20 +432,28 @@ class TestSkipManagerInitAndAnnotate:
         SkipManager.init(cfg)
         root = _project_dump_root(tmp_path, cfg)
 
+        def _make_prompts(sample_id: str) -> DataProto:
+            p = DataProto.from_dict(tensors={"x": torch.zeros(1)})
+            p.non_tensor_batch["uid"] = np.array([f"uid_{sample_id}"], dtype=object)
+            return p
+
         @SkipManager.annotate(role="async_rollout")
-        async def gen_single(_self: Any, _prompts: Any, sample_id: str) -> DataProto:
+        async def gen_single(_self: Any, prompts: DataProto) -> DataProto:
+            # simulate reading sample_id: strip "uid_" prefix then parse
+            raw = str(prompts.non_tensor_batch["uid"][0])
+            sample_id = raw[4:] if raw.startswith("uid_") else raw
             return DataProto.from_dict(tensors={"a": torch.tensor([float(sample_id.split("_")[-1])])})
 
         async def _run():
-            out = await gen_single(None, None, "sample_0_1")
+            out = await gen_single(None, _make_prompts("sample_0_1"))
             assert out.batch["a"].item() == 1.0
             assert (root / "1" / "gen_batch.dp").exists()
 
             @SkipManager.annotate(role="async_rollout")
-            async def gen_cached(_self: Any, _prompts: Any, sample_id: str) -> DataProto:
+            async def gen_cached(_self: Any, prompts: DataProto) -> DataProto:
                 raise AssertionError("cached path")
 
-            loaded = await gen_cached(None, None, "sample_0_1")
+            loaded = await gen_cached(None, _make_prompts("sample_0_1"))
             assert loaded.batch["a"].item() == 1.0
 
         asyncio.run(_run())
@@ -446,12 +464,15 @@ class TestSkipManagerInitAndAnnotate:
         calls = {"n": 0}
 
         @SkipManager.annotate(role="async_rollout")
-        async def gen(_self: Any, _prompts: Any, sample_id: str) -> str:
+        async def gen(_self: Any, prompts: DataProto) -> DataProto:
             calls["n"] += 1
-            return sample_id
+            return prompts
 
         async def _run():
-            assert await gen(None, None, "sample_0_1") == "sample_0_1"
+            p = DataProto.from_dict(tensors={"x": torch.zeros(1)})
+            p.non_tensor_batch["uid"] = np.array(["uid_sample_0_1"], dtype=object)
+            out = await gen(None, p)
+            assert out.non_tensor_batch["uid"][0] == "uid_sample_0_1"
             assert calls["n"] == 1
 
         asyncio.run(_run())

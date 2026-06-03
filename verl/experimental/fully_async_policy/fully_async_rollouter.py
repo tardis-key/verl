@@ -369,12 +369,11 @@ class FullyAsyncLLMServerManager(LLMServerManager):
 
 class FullyAsyncAgentLoopManager(AgentLoopManager):
     @SkipManager.annotate(role="async_rollout")
-    async def generate_sequences_single(self, prompts: DataProto, sample_id: str | None = None) -> DataProto:
+    async def generate_sequences_single(self, prompts: DataProto) -> DataProto:
         """Split input batch and dispatch to agent loop workers.
 
         Args:
             prompts (DataProto): Input batch. Single sample data
-            sample_id (str): Rollouter sample id, e.g. ``sample_{epoch}_{global_steps}``, used for skip management
         Returns:
             DataProto: Output batch.
         """
@@ -937,13 +936,12 @@ class FullyAsyncRollouter(SeparateRayPPOTrainer):
     async def _process_single_sample_streaming(self, rollout_sample: RolloutSample):
         """Process a single sample streamingly"""
         # Calling asynchronous generation methods
-        ret = await self.async_rollout_manager.generate_sequences_single(
-            rollout_sample.full_batch, rollout_sample.sample_id
-        )
-        rollout_sample.full_batch = ret
+        # Embed sample_id into prompts for skip management
         rollout_sample.full_batch.non_tensor_batch["uid"] = np.array(
             [f"uid_{rollout_sample.sample_id}"] * len(rollout_sample.full_batch), dtype=object
         )
+        ret = await self.async_rollout_manager.generate_sequences_single(rollout_sample.full_batch)
+        rollout_sample.full_batch = ret
         rollout_sample.rollout_status = await self.get_statistics()
 
         success = await self.message_queue_client.put_sample(

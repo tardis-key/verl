@@ -165,12 +165,15 @@ class RolloutSkip(BaseSkip):
 
 
 def parse_async_rollout_sample_step(sample_id: str) -> int:
-    """Parse the prompt **feed index** embedded in ``sample_{epoch}_{index}``.
+    """Parse the prompt **feed index** embedded in ``uid_sample_{epoch}_{index}`` or ``sample_{epoch}_{index}``.
 
     The trailing integer is Rollouter ``global_steps`` at feed time: monotonic order in which
     prompts are submitted to the async pipeline. It is **not** trainer ``global_steps``, parameter
     sync version, or guaranteed completion order under concurrent rollout.
     """
+    # Strip optional "uid_" prefix (set in non_tensor_batch["uid"])
+    if sample_id.startswith("uid_"):
+        sample_id = sample_id[4:]
     parts = sample_id.split("_")
     if len(parts) < 3 or parts[0] != "sample":
         raise ValueError(f"Invalid async rollout sample_id: {sample_id!r}, expected sample_<epoch>_<feed_index>")
@@ -184,9 +187,12 @@ class AsyncRolloutSkip(RolloutSkip):
     support_online_step = True
 
     def extract_step(self, *args, **kwargs) -> int:
-        # generate_sequences_single(self, prompts, sample_id)
-        # sample_id suffix = feed-order index, not trainer global step.
-        sample_id = args[2] if len(args) > 2 else kwargs.get("sample_id")
-        if sample_id is None:
-            raise ValueError("async_rollout extract_step expects sample_id as the third argument")
-        return parse_async_rollout_sample_step(str(sample_id))
+        # generate_sequences_single(self, prompts)
+        # sample_id is embedded in prompts.non_tensor_batch["uid"]
+        prompts = args[1] if len(args) > 1 else kwargs.get("prompts")
+        if prompts is None:
+            raise ValueError("async_rollout extract_step expects prompts as the second argument")
+        uid_array = prompts.non_tensor_batch.get("uid")
+        if uid_array is None or len(uid_array) == 0:
+            raise ValueError("async_rollout extract_step expects uid in prompts.non_tensor_batch")
+        return parse_async_rollout_sample_step(str(uid_array[0]))
