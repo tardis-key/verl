@@ -20,7 +20,6 @@ import asyncio
 import json
 import shutil
 import uuid
-import warnings
 from pathlib import Path
 from typing import Any
 
@@ -335,16 +334,6 @@ class TestSkipManagerInitAndAnnotate:
         async_inst = SkipManager.skip_instances["async_rollout"]
         assert async_inst.support_online_step is True
 
-    def test_legacy_skip_enable_warns_and_can_disable_legacy(self, tmp_path: Path):
-        cfg = _minimal_skip_cfg(str(tmp_path), steps=[1])
-        cfg.actor_rollout_ref.rollout.skip.enable = True
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            SkipManager.init(cfg)
-            kinds = [x.category for x in w]
-            assert DeprecationWarning in kinds
-        assert cfg.actor_rollout_ref.rollout.skip.enable is False
-
     def test_annotate_sync_bypass_when_step_not_in_steps(self, tmp_path: Path):
         cfg = _minimal_skip_cfg(str(tmp_path), enable=True, steps=[99])
         SkipManager.init(cfg)
@@ -497,24 +486,6 @@ class TestSkipManagerRuntimeScenarios:
             return x * 2
 
         assert f(3) == 6
-
-    def test_legacy_only_enabled_warns_but_keeps_legacy_flag(self, tmp_path: Path):
-        cfg = _minimal_skip_cfg(str(tmp_path), enable=False, steps=[1])
-        cfg.actor_rollout_ref.rollout.skip.enable = True
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            SkipManager.init(cfg)
-        assert any(item.category is DeprecationWarning for item in w)
-        assert cfg.actor_rollout_ref.rollout.skip.enable is True
-
-    def test_new_and_legacy_enabled_disables_legacy(self, tmp_path: Path):
-        cfg = _minimal_skip_cfg(str(tmp_path), enable=True, steps=[1])
-        cfg.actor_rollout_ref.rollout.skip.enable = True
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            SkipManager.init(cfg)
-        assert any(item.category is DeprecationWarning for item in w)
-        assert cfg.actor_rollout_ref.rollout.skip.enable is False
 
 
 class TestSkipDumpDiskScenarios:

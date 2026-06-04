@@ -942,6 +942,10 @@ class FullyAsyncRollouter(SeparateRayPPOTrainer):
         )
         ret = await self.async_rollout_manager.generate_sequences_single(rollout_sample.full_batch)
         rollout_sample.full_batch = ret
+        # Re-set uid on output — agent loop worker returns a new DataProto without the input's non_tensor_batch
+        rollout_sample.full_batch.non_tensor_batch["uid"] = np.array(
+            [f"uid_{rollout_sample.sample_id}"] * len(rollout_sample.full_batch), dtype=object
+        )
         rollout_sample.rollout_status = await self.get_statistics()
 
         success = await self.message_queue_client.put_sample(
