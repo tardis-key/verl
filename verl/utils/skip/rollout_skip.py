@@ -175,7 +175,7 @@ def parse_async_rollout_sample_step(sample_id: str) -> int:
     if sample_id.startswith("uid_"):
         sample_id = sample_id[4:]
     parts = sample_id.split("_")
-    if len(parts) < 3 or parts[0] != "sample":
+    if len(parts) != 3 or parts[0] != "sample":
         raise ValueError(f"Invalid async rollout sample_id: {sample_id!r}, expected sample_<epoch>_<feed_index>")
     return int(parts[-1])
 
