@@ -14,7 +14,6 @@
 import logging
 import os
 
-import torch
 from torch.distributed.device_mesh import init_device_mesh
 
 from verl.utils.device import get_device_name, is_npu_available
