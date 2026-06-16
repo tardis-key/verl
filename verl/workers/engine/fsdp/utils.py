@@ -26,15 +26,11 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 def apply_npu_fsdp_patches(model_config=None):
     """Apply NPU patches for FSDP backend if NPU is available."""
     if is_npu_available:
-        try:
-            if model_config is not None and model_config.get("use_liger", False):
-                return
-            import verl.models.transformers.npu_patch  # noqa
+        if model_config is not None and model_config.get("use_liger", False):
+            return
+        from verl.models.transformers.npu_patch import apply_npu_patches
 
-            if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
-                logger.info("Applied NPU patches for FSDP backend")
-        except Exception as e:
-            logger.warning(f"Failed to apply NPU patches: {e}")
+        apply_npu_patches()
 
 
 def create_device_mesh(world_size, fsdp_size):
