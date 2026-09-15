@@ -425,6 +425,9 @@ class RLInsightLogger:
 
     @classmethod
     def register_transfer_queue_metrics(cls, config) -> None:
+        if cls.enabled() and cls._get_rl_insight().is_platform_mode():
+            return
+
         if not (config or {}).get("transfer_queue", {}).get("metrics", {}).get("enabled", False):
             return
 
@@ -447,6 +450,8 @@ class RLInsightLogger:
         labels: list[dict[str, Any] | None] | None = None,
     ) -> None:
         if not cls.enabled():
+            return
+        if cls._get_rl_insight().is_platform_mode():
             return
 
         metric_key = (job_name, tuple(server_addresses), repr(labels))
