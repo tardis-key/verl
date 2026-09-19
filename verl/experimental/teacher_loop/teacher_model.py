@@ -223,10 +223,8 @@ class MultiTeacherModelManager:
 
     @auto_await
     async def start_profile(self, **kwargs):
-        for manager in self.teacher_model_managers.values():
-            await manager.start_profile(**kwargs)
+        await asyncio.gather(*(manager.start_profile(**kwargs) for manager in self.teacher_model_managers.values()))
 
     @auto_await
     async def stop_profile(self):
-        for manager in self.teacher_model_managers.values():
-            await manager.stop_profile()
+        await asyncio.gather(*(manager.stop_profile() for manager in self.teacher_model_managers.values()))
