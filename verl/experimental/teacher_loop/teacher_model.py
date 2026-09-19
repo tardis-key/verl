@@ -117,11 +117,13 @@ class TeacherModelManager:
         if not rollout_config.disable_log_stats and rollout_config.prometheus.enable:
             update_prometheus_config(rollout_config.prometheus, self.server_addresses, rollout_config.name)
         if not rollout_config.disable_log_stats and RLInsightLogger.enabled():
-            teacher_key = teacher_model_config.key or "default"
             RLInsightLogger.register_rollout_metrics(
                 self.server_addresses,
                 rollout_config.name,
-                labels=[{"replica": f"teacher_{teacher_key}_{rank}"} for rank in range(num_replicas)],
+                labels=[
+                    {"replica": f"{server.state_lane_prefix}_{rank}"}
+                    for rank, server in enumerate(self.rollout_replicas)
+                ],
             )
 
     def _validate_replica_node_alignment(self, replica_pools, per_replica_world_size, gpus_per_node):
