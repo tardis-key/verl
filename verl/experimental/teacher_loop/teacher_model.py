@@ -120,10 +120,7 @@ class TeacherModelManager:
             RLInsightLogger.register_rollout_metrics(
                 self.server_addresses,
                 rollout_config.name,
-                labels=[
-                    {"replica": f"teacher_{rank}"}
-                    for rank, server in enumerate(self.rollout_replicas)
-                ],
+                labels=[{"replica": f"teacher_{rank}"} for rank, server in enumerate(self.rollout_replicas)],
             )
 
     def _validate_replica_node_alignment(self, replica_pools, per_replica_world_size, gpus_per_node):
