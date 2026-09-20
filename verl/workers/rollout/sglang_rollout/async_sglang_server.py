@@ -658,7 +658,6 @@ class SGLangHttpServer:
         with RLInsightLogger.trace_state(
             "sglang_generate",
             state_lane_id=f"{self.state_lane_prefix}_replica_{self.replica_rank}",
-            model_role=self.state_lane_prefix,
         ):
             output = await self.tokenizer_manager.generate_request(generate_request, None).__anext__()
         meta_info = output.get("meta_info", {})

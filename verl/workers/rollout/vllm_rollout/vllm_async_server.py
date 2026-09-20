@@ -668,7 +668,6 @@ class vLLMHttpServer:
         with RLInsightLogger.trace_state(
             "vllm_generate",
             state_lane_id=f"{self.state_lane_prefix}_replica_{self.replica_rank}",
-            model_role=self.state_lane_prefix,
         ):
             generator = self.engine.generate(
                 prompt=prompt,
