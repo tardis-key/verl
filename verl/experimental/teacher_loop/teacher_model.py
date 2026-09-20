@@ -121,7 +121,7 @@ class TeacherModelManager:
                 self.server_addresses,
                 rollout_config.name,
                 labels=[
-                    {"replica": f"{server.state_lane_prefix}_{rank}"}
+                    {"replica": f"teacher_{rank}"}
                     for rank, server in enumerate(self.rollout_replicas)
                 ],
             )
