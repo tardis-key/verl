@@ -544,6 +544,7 @@ class TestServerProfilerFunctionality(unittest.IsolatedAsyncioTestCase):
             mock_self.replica_rank,
             mock_self.replica_world_size,
             mock_self.profiler_keep_global_ranks,
+            mock_self.state_lane_prefix,
         )
         # The engine does NOT run the finish command itself: it shares save_path with the colocated
         # training worker, whose single end-of-run upload covers these relocated traces too. Running
@@ -632,7 +633,12 @@ class TestServerProfilerFunctionality(unittest.IsolatedAsyncioTestCase):
             # Test start_profile
             await SGLangHttpServer.start_profile(mock_self)
 
-            mock_build.assert_called_once_with(mock_profiler.config, mock_profiler.tool_config, mock_self.replica_rank)
+            mock_build.assert_called_once_with(
+                mock_profiler.config,
+                mock_profiler.tool_config,
+                mock_self.replica_rank,
+                state_lane_prefix=mock_self.state_lane_prefix,
+            )
             mock_tokenizer_manager.start_profile.assert_called_once_with(**mock_args)
 
             # Test stop_profile
@@ -649,6 +655,7 @@ class TestServerProfilerFunctionality(unittest.IsolatedAsyncioTestCase):
                 mock_self.replica_rank,
                 mock_self.replica_world_size,
                 mock_self.profiler_keep_global_ranks,
+                mock_self.state_lane_prefix,
             )
             mock_profiler.run_finish_hook.assert_not_called()
 
