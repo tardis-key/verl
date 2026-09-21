@@ -148,7 +148,6 @@ class SGLangHttpServer:
         base_gpu_id: int,
         disaggregation_role: str = "null",
         disaggregation_bootstrap_port: Optional[int] = None,
-        state_lane_prefix: str = "rollout",
     ):
         print(
             f"SGLang http server: {rollout_mode=}, {replica_rank=}, {node_rank=}, "
@@ -180,7 +179,6 @@ class SGLangHttpServer:
         self.node_rank = node_rank
         self.nnodes = nnodes
         self.base_gpu_id = base_gpu_id
-        self.state_lane_prefix = state_lane_prefix
         # model weights version, set by ServerAdapter when update weights.
         self.global_steps = None
 
@@ -749,10 +747,7 @@ class SGLangHttpServer:
             and self.profiler_controller.is_discrete_mode()
         ):
             profile_args = build_sglang_profiler_args(
-                self.profiler_controller.config,
-                self.profiler_controller.tool_config,
-                self.replica_rank,
-                state_lane_prefix=self.state_lane_prefix,
+                self.profiler_controller.config, self.profiler_controller.tool_config, self.replica_rank
             )
             tokenizer_manager = getattr(self, "tokenizer_manager", None)
             if tokenizer_manager is None:
@@ -778,7 +773,6 @@ class SGLangHttpServer:
                 self.replica_rank,
                 self.replica_world_size,
                 self.profiler_keep_global_ranks,
-                self.state_lane_prefix,
             )
 
 
@@ -873,7 +867,6 @@ class SGLangReplica(RolloutReplica):
                 nnodes=self.nnodes,
                 cuda_visible_devices=node_cuda_visible_devices,
                 base_gpu_id=base_gpu_id,
-                state_lane_prefix=self.state_lane_prefix,
             )
             self.servers.append(server)
 
