@@ -339,13 +339,30 @@ class ProfilerConfig(BaseConfig):
         )
 
 
+def rollout_trace_lane() -> str:
+    """Return the profiler lane of the calling engine, derived from its Ray actor name.
+
+    Rollout server actors are named ``{engine}_server[_teacher|_reward]_{replica_rank}_{node_rank}``
+    (e.g. ``vllm_server_0_0``, ``sglang_server_teacher_1_0``, ``trtllm_server_reward_2``). Normalize
+    those to ``{role}_replica_{rank_suffix}`` so trace paths keep their role semantics: downstream
+    tooling (e.g. tests/utils/test_check_profiler_output.py) locates rollout traces by the
+    ``rollout_replica`` naming. Any other actor name is returned unchanged.
+    """
+    actor_name = ray.get_runtime_context().get_actor_name() or ""
+    match = re.match(r"^[a-z0-9]+_server_(?:(teacher|reward)_)?(.*)$", actor_name)
+    if not match:
+        return actor_name
+    role = match.group(1) or "rollout"
+    return f"{role}_replica_{match.group(2)}"
+
+
 def rollout_trace_dir(profiler_config: ProfilerConfig) -> str:
     """Return the directory an inference engine writes the traces of ``rank`` to.
 
     Engine-side profiling is per replica, so each replica gets its own sub-directory of
     ``save_path`` instead of writing into the flat layout the training workers use.
     """
-    return os.path.join(profiler_config.save_path, f"agent_loop_{ray.get_runtime_context().get_actor_name()}")
+    return os.path.join(profiler_config.save_path, f"agent_loop_{rollout_trace_lane()}")
 
 
 def rollout_profiler_global_ranks(profiler_config: Optional["ProfilerConfig"]) -> Optional[set[int]]:
@@ -419,7 +436,7 @@ def relocate_rollout_traces(
     When ``world_size > 1`` and that tp rank can be read, the file's absolute global GPU rank
     (``rank * world_size + tp_rank``) is added to the relocated name so the flattened files line up
     with the global ``ranks`` the user configured -- e.g. with ``tp=2`` replica 4's tp rank 0 becomes
-    ``rollout-replica4-globalrank8_...``. When the tp rank is not encoded in the name (or
+    ``rollout_replica_4_0-globalrank8_...``. When the tp rank is not encoded in the name (or
     ``world_size <= 1``, where the replica index is already the global rank) only the replica index
     is used.
 
@@ -438,7 +455,7 @@ def relocate_rollout_traces(
     if not getattr(profiler_config, "relocate_results", False):
         return []
 
-    lane = ray.get_runtime_context().get_actor_name()
+    lane = rollout_trace_lane()
     src_dir = rollout_trace_dir(profiler_config)
     if not os.path.isdir(src_dir):
         return []

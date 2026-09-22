@@ -40,6 +40,20 @@ class TestServerProfilerArgs(unittest.TestCase):
         mock_rt.return_value.get_actor_name.return_value = "rollout"
         self.addCleanup(patcher.stop)
 
+    def test_rollout_trace_dir_normalizes_server_actor_names(self):
+        config = ProfilerConfig(save_path="/tmp/test", tool_config=None)
+        cases = {
+            "vllm_server_3_0": "/tmp/test/agent_loop_rollout_replica_3_0",
+            "sglang_server_1_0": "/tmp/test/agent_loop_rollout_replica_1_0",
+            "vllm_server_teacher_1_0": "/tmp/test/agent_loop_teacher_replica_1_0",
+            "trtllm_server_reward_2": "/tmp/test/agent_loop_reward_replica_2",
+            "vllm_server_decode_1_0": "/tmp/test/agent_loop_rollout_replica_decode_1_0",
+        }
+        with patch("ray.get_runtime_context") as mock_rt:
+            for actor_name, expected in cases.items():
+                mock_rt.return_value.get_actor_name.return_value = actor_name
+                self.assertEqual(rollout_trace_dir(config), expected, actor_name)
+
     def test_build_vllm_profiler_args(self):
         # Case 1: All features enabled
         tool_config = TorchProfilerToolConfig(contents=["stack", "shapes", "memory"])
