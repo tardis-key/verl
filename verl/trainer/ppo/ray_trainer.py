@@ -222,7 +222,7 @@ def compute_advantage(
     if "response_mask" not in data.batch.keys():
         data.batch["response_mask"] = compute_response_mask(data)
     if custom_cfg:
-        from oxygenrl.utils.custom import get_custom_fn
+        from oxygenrl.general.utils.custom import get_custom_fn
 
         file_path = custom_cfg.get("path", None)
         function_name = custom_cfg.get("name", None)
