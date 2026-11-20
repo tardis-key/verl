@@ -162,6 +162,7 @@ class ActorConfig(BaseConfig):
     clip_ratio_low: float = 0.2
     clip_ratio_high: float = 0.2
     freeze_vision_tower: bool = False
+    freeze_vision_aligner: bool = True
     policy_loss: PolicyLossConfig = field(default_factory=PolicyLossConfig)
     clip_ratio_c: float = 3.0
     loss_agg_mode: str = "token-mean"
@@ -287,6 +288,10 @@ class McoreActorConfig(ActorConfig):
         """Validate FSDP actor configuration parameters."""
         super().__post_init__()
         self.engine = self.megatron
+        # Propagate vision-tower freezing to the engine config (McoreEngineConfig),
+        # which is what the Megatron engine actually reads. Mirrors FSDPActorConfig.
+        object.__setattr__(self.engine, "freeze_vision_tower", self.freeze_vision_tower)
+        object.__setattr__(self.engine, "freeze_vision_aligner", self.freeze_vision_aligner)
 
 
 @dataclass
@@ -324,6 +329,7 @@ class FSDPActorConfig(ActorConfig):
         super().__post_init__()
         self.engine = self.fsdp_config
         # Sync strategy to engine config so engine_workers can pick the right FSDP version.
+        object.__setattr__(self.engine, "freeze_vision_aligner", self.freeze_vision_aligner)
         # EngineConfig.strategy defaults to None, so without this, engine_workers.py always
         # falls back to FSDP1 even when actor.strategy="fsdp2".
         object.__setattr__(self.engine, "strategy", self.strategy)

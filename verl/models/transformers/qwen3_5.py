@@ -26,7 +26,12 @@ from torch.distributed.tensor import DTensor
 from transformers.models.qwen3_5.modeling_qwen3_5 import (
     Qwen3_5CausalLMOutputWithPast,
     Qwen3_5ForConditionalGeneration,
+    causal_conv1d_fn,
+    causal_conv1d_update,
+    torch_chunk_gated_delta_rule,
+    torch_recurrent_gated_delta_rule,
 )
+from transformers.utils import is_causal_conv1d_available
 
 from verl.utils.ulysses import (
     get_ulysses_sequence_parallel_group,
@@ -164,19 +169,19 @@ def _packed_chunk_gated_delta_rule(self, query, key, value, g, beta, cu_seqlens,
         "use_qk_l2norm_in_kernel": True,
     }
     if cu_seqlens is None:
-        return self.chunk_gated_delta_rule(query, key, value, **kwargs)
+        return torch_chunk_gated_delta_rule(query, key, value, **kwargs)
 
     if cp_context is not None:
-        if not _call_accepts_kwarg(self.chunk_gated_delta_rule, "cp_context"):
+        if not _call_accepts_kwarg(torch_chunk_gated_delta_rule, "cp_context"):
             raise NotImplementedError("Qwen3.5 Ulysses SP requires FLA chunk_gated_delta_rule cp_context support.")
         kwargs["cp_context"] = cp_context
-        return self.chunk_gated_delta_rule(query, key, value, **kwargs)
+        return torch_chunk_gated_delta_rule(query, key, value, **kwargs)
 
-    if _call_accepts_kwarg(self.chunk_gated_delta_rule, "cu_seqlens"):
+    if _call_accepts_kwarg(torch_chunk_gated_delta_rule, "cu_seqlens"):
         kwargs["cu_seqlens"] = cu_seqlens
-        if _call_accepts_kwarg(self.chunk_gated_delta_rule, "cu_seqlens_cpu"):
+        if _call_accepts_kwarg(torch_chunk_gated_delta_rule, "cu_seqlens_cpu"):
             kwargs["cu_seqlens_cpu"] = cu_seqlens_cpu
-        return self.chunk_gated_delta_rule(query, key, value, **kwargs)
+        return torch_chunk_gated_delta_rule(query, key, value, **kwargs)
 
     outputs = []
     for q_i, k_i, v_i, g_i, beta_i in _split_packed_args(
@@ -185,7 +190,7 @@ def _packed_chunk_gated_delta_rule(self, query, key, value, g, beta, cu_seqlens,
         split_kwargs = dict(kwargs)
         split_kwargs["g"] = g_i
         split_kwargs["beta"] = beta_i
-        out_i, _ = self.chunk_gated_delta_rule(q_i, k_i, v_i, **split_kwargs)
+        out_i, _ = torch_chunk_gated_delta_rule(q_i, k_i, v_i, **split_kwargs)
         outputs.append(out_i)
     return torch.cat(outputs, dim=1), None
 
@@ -224,10 +229,12 @@ def qwen3_5_gated_delta_net_forward(
             model_cu_seqlens = cp_context.cu_seqlens
             model_cu_seqlens_cpu = cp_context.cu_seqlens_cpu
 
-    use_precomputed_states = cache_params is not None and cache_params.has_previous_state and seq_len == 1
-    if cache_params is not None:
-        conv_state = cache_params.conv_states[self.layer_idx]
-        recurrent_state = cache_params.recurrent_states[self.layer_idx]
+    # NOTE: current transformers stores linear-attention cache state on
+    # `cache_params.layers[layer_idx]` (a LinearAttentionCacheLayerMixin), and
+    # `has_previous_state` is a method, not the flat dict-indexed attribute this
+    # function originally targeted. See transformers.cache_utils.Cache.
+    use_precomputed_states = cache_params is not None and cache_params.has_previous_state(self.layer_idx)
+    recurrent_state = cache_params.layers[self.layer_idx].recurrent_states[0] if use_precomputed_states else None
 
     mixed_qkv = self.in_proj_qkv(hidden_states)
     mixed_qkv = mixed_qkv.transpose(1, 2)
@@ -238,19 +245,36 @@ def qwen3_5_gated_delta_net_forward(
     b = self.in_proj_b(hidden_states)
     a = self.in_proj_a(hidden_states)
 
-    if use_precomputed_states:
-        mixed_qkv = self.causal_conv1d_update(
-            mixed_qkv,
-            conv_state,
-            self.conv1d.weight.squeeze(1),
-            self.conv1d.bias,
-            self.activation,
-        )
+    if cache_params is not None:
+        # cu_seqlens is guaranteed None here (asserted above), so none of the packed/CP
+        # handling below applies; mirror transformers' own cache-integrated conv path,
+        # including its `record_past` fast-path guard (single-step fused kernel only
+        # when the cache uses a fixed circular buffer, not full-history retention).
+        if use_precomputed_states and seq_len == 1 and not cache_params.layers[self.layer_idx].record_past:
+            conv_state = cache_params.layers[self.layer_idx].conv_states[0]
+            mixed_qkv = causal_conv1d_update(
+                mixed_qkv,
+                conv_state,
+                self.conv1d.weight.squeeze(1),
+                self.conv1d.bias,
+                self.activation,
+            )
+        else:
+            mixed_qkv = cache_params.update_conv_state(
+                mixed_qkv, self.layer_idx, conv_kernel_size=self.conv_kernel_size
+            )
+            mixed_qkv = causal_conv1d_fn(
+                mixed_qkv,
+                self.conv1d.weight.squeeze(1),
+                self.conv1d.bias,
+                activation=self.activation,
+            )
+            # Drop the left-context frames update_conv_state prepended for the conv window.
+            mixed_qkv = mixed_qkv[..., -seq_len:]
     else:
-        if cache_params is not None:
-            conv_state = F.pad(mixed_qkv, (self.conv_kernel_size - mixed_qkv.shape[-1], 0))
-            cache_params.conv_states[self.layer_idx] = conv_state
-        if self.causal_conv1d_fn is not None:
+        # No cache: preserve Ulysses SP / CP packed-sequence support, which upstream
+        # transformers does not need since it never runs packed multi-sample batches.
+        if is_causal_conv1d_available():
             conv_prefix_len = 0
             conv_input = mixed_qkv
             if cp_context is not None:
@@ -262,7 +286,7 @@ def qwen3_5_gated_delta_net_forward(
                 if model_cu_seqlens is not None
                 else None
             )
-            conv_output = self.causal_conv1d_fn(
+            conv_output = causal_conv1d_fn(
                 x=conv_input,
                 weight=self.conv1d.weight.squeeze(1),
                 bias=self.conv1d.bias,
@@ -307,12 +331,12 @@ def qwen3_5_gated_delta_net_forward(
         query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
         key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
-    if not use_precomputed_states:
+    if not (use_precomputed_states and seq_len == 1):
         core_attn_out, last_recurrent_state = _packed_chunk_gated_delta_rule(
             self, query, key, value, g, beta, model_cu_seqlens, model_cu_seqlens_cpu, cp_context
         )
     else:
-        core_attn_out, last_recurrent_state = self.recurrent_gated_delta_rule(
+        core_attn_out, last_recurrent_state = torch_recurrent_gated_delta_rule(
             query,
             key,
             value,
@@ -323,8 +347,8 @@ def qwen3_5_gated_delta_net_forward(
             use_qk_l2norm_in_kernel=True,
         )
 
-    if cache_params is not None:
-        cache_params.recurrent_states[self.layer_idx] = last_recurrent_state
+    if cache_params is not None and last_recurrent_state is not None:
+        cache_params.update_recurrent_state(last_recurrent_state, self.layer_idx)
 
     core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
     z = z.reshape(-1, self.head_v_dim)
@@ -350,7 +374,12 @@ def qwen3_5_decoder_layer_forward(
 
     hidden_states = self.input_layernorm(hidden_states)
 
-    if self.layer_type == "linear_attention":
+    # NOTE: transformers' Qwen3_5DecoderLayer / Qwen3_5MoeDecoderLayer store this
+    # as `block_type` (see modeling_qwen3_5.py / modeling_qwen3_5_moe.py). Only the
+    # nested Qwen3_5GatedDeltaNet submodule uses the `layer_type` name. Reading
+    # `self.layer_type` here resolves to nn.Module.__getattr__ and raises
+    # AttributeError because the decoder layer itself has no such attribute.
+    if self.block_type == "linear_attention":
         hidden_states = self.linear_attn(
             hidden_states=hidden_states,
             cache_params=past_key_values,
@@ -358,7 +387,7 @@ def qwen3_5_decoder_layer_forward(
             cu_seqlens=cu_seqlens,
             cu_seqlens_cpu=cu_seqlens_cpu,
         )
-    elif self.layer_type == "full_attention":
+    elif self.block_type == "full_attention":
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,

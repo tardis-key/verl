@@ -211,6 +211,8 @@ class McoreEngineConfig(EngineConfig):
     use_mbridge: bool = True
     vanilla_mbridge: bool = False
     use_megatron_fsdp: bool = False
+    freeze_vision_tower: bool = False
+    freeze_vision_aligner: bool = True
     strategy: str = "megatron"
     qat: QATEngineConfig = field(default_factory=QATEngineConfig)
 
@@ -294,6 +296,8 @@ class FSDPEngineConfig(EngineConfig):
     entropy_from_logits_chunk_size: int = 2048
     use_torch_compile: bool = True
     entropy_checkpointing: bool = False
+    freeze_vision_tower: bool = False
+    freeze_vision_aligner: bool = True
     strategy: str = "fsdp"
     pad_to_length: bool = False
     pad_to_length_bucket: int = 1024

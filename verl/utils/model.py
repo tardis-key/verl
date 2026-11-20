@@ -194,6 +194,48 @@ def print_model_size(model: nn.Module, name: str = None):
     print(f"{name} contains {n_params:.2f}{scale} parameters")
 
 
+def freeze_vision_tower(model: nn.Module, freeze_aligner: bool = True, required: bool = True) -> None:
+    """Freeze the vision tower in-place by setting ``requires_grad=False``.
+
+    Mirrors ms-swift's ``freeze_vit`` / ``freeze_aligner`` semantics: the whole
+    vision tower is frozen first, and when ``freeze_aligner`` is False the patch
+    merger (aligner / projector) is re-activated so it keeps training. This is
+    exactly swift's two-step behavior for ``--freeze_vit true --freeze_aligner
+    false`` (freeze the ViT backbone, train the merger).
+
+    Works for both HF models (FSDP path: ``model.visual`` / ``model.model.visual``)
+    and the mbridge mcore VL model (Megatron path: ``model.vision_model``). Must be
+    called BEFORE DDP/FSDP wrapping so frozen params are excluded from gradient
+    buckets and the optimizer.
+
+    Args:
+        model: The (unwrapped) model holding the vision tower.
+        freeze_aligner: If False, keep the ``merger`` submodule trainable.
+        required: If True, raise when no vision tower is found; if False, skip
+            silently (e.g. non-first pipeline stages where ``vision_model`` is None).
+    """
+    vision_tower = None
+    for attr_name in ("visual", "vision_tower", "vision_model"):
+        if getattr(model, attr_name, None) is not None:
+            vision_tower = getattr(model, attr_name)
+            break
+        inner = getattr(model, "model", None)
+        if inner is not None and getattr(inner, attr_name, None) is not None:
+            vision_tower = getattr(inner, attr_name)
+            break
+
+    if vision_tower is None:
+        if required:
+            raise ValueError("freeze_vision_tower was enabled, but no vision tower module was found")
+        return
+
+    vision_tower.requires_grad_(False)
+    if not freeze_aligner:
+        merger = getattr(vision_tower, "merger", None)
+        if merger is not None:
+            merger.requires_grad_(True)
+
+
 def create_random_mask(
     input_ids: torch.Tensor,
     max_ratio_of_valid_token: float,

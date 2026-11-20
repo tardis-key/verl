@@ -56,7 +56,19 @@ def enable_full_determinism(seed: int):
     torch.manual_seed(seed)
     device_manual_seed(seed)
     device_manual_seed_all(seed)
+    # torch.use_deterministic_algorithms(True) also flips
+    # torch._inductor.config.deterministic = True as of PyTorch 2.7+, which
+    # makes Inductor reject any autotune scenario (e.g. Triton pointwise
+    # kernel autotuning inside vLLM compilation path). vLLM does not currently
+    # gate its autotune against Inductor deterministic guard, so leaving this
+    # on crashes EngineCore init with InductorError. Keep torch op determinism
+    # but re-open Inductor autotune.
     torch.use_deterministic_algorithms(True, warn_only=True)
+    try:
+        import torch._inductor.config as _inductor_config
+        _inductor_config.deterministic = False
+    except (ImportError, AttributeError):
+        pass
     # Enable CUDNN deterministic mode
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False

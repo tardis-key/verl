@@ -470,6 +470,8 @@ class MegatronEngine(BaseEngine):
             use_distributed_optimizer=self.engine_config.use_distributed_optimizer,
             use_layer_wise_distributed_optimizer=layer_wise_muon,
             use_megatron_fsdp=self.engine_config.use_megatron_fsdp,
+            freeze_vision_tower=self.engine_config.freeze_vision_tower,
+            freeze_vision_aligner=self.engine_config.freeze_vision_aligner,
         )
         override_ddp_config = self._resolve_override_ddp_config()
 
@@ -822,6 +824,10 @@ class MegatronEngine(BaseEngine):
             return input_ids.offsets()[-1]
         return torch.tensor(input_ids.numel(), device=input_ids.device)
 
+    def _run_forward_backward_schedule(self, **kwargs):
+        """Run the MCore pipeline schedule prepared by the RL host adapter."""
+        return get_forward_backward_func()(**kwargs)
+
     def forward_backward_batch(self, data: TensorDict, loss_function: Callable, forward_only=False) -> Any:
         self._distillation_use_topk_active = tu.get_non_tensor_data(data, key="distillation_use_topk", default=False)
         tu.assign_non_tensor(data, sp_size=self.engine_config.context_parallel_size)
@@ -916,8 +922,6 @@ class MegatronEngine(BaseEngine):
             if global_max_seqlen is not None:
                 tu.assign_non_tensor(micro_batch, forced_max_seqlen=global_max_seqlen)
 
-        forward_backward_func = get_forward_backward_func()
-
         postprocess_micro_batch_func = partial(
             self.postprocess_micro_batch_func,
             forward_only=forward_only,
@@ -946,7 +950,7 @@ class MegatronEngine(BaseEngine):
 
         # TODO: we may use the new schedule instead
         # for flash-attn: (seq_len, batch_size, hidden_size) = (mbs*seq_len, 1, hidden_size)
-        losses_reduced = forward_backward_func(
+        losses_reduced = self._run_forward_backward_schedule(
             forward_step_func=forward_step,
             data_iterator=batch_generator,
             model=self.module,

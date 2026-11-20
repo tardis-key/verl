@@ -13,6 +13,7 @@
 # limitations under the License.
 import logging
 import os
+from copy import deepcopy
 from enum import Enum
 
 import ray
@@ -84,8 +85,13 @@ class PPOTrainerSeparateAsync(PPOTrainer):
         # initialize standalone rollout
         # TODO: make initialization parallel with super().init()
         hybrid_num_replicas = len(self.llm_server_manager.rollout_replicas)
+        standalone_config = deepcopy(self.config)
+        standalone_rollout = standalone_config.actor_rollout_ref.rollout
+        standalone_gmu = standalone_rollout.get("standalone_gpu_memory_utilization", None)
+        if standalone_gmu is not None:
+            standalone_rollout.gpu_memory_utilization = standalone_gmu
         self.standalone_server_manager: LLMServerManager = LLMServerManager.create(
-            config=self.config, start_rank=hybrid_num_replicas
+            config=standalone_config, start_rank=hybrid_num_replicas
         )
 
         # create checkpoint engine manager for trainer and standalone rollout

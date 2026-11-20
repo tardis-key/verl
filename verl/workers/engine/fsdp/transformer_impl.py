@@ -567,7 +567,7 @@ class FSDPEngine(BaseEngine):
         logger.info(f"[QAT W4A4] Restored {loaded_count} input_global_scale/input_amax from {model_path}")
 
     def _build_model_optimizer(self):
-        from verl.utils.model import print_model_size
+        from verl.utils.model import freeze_vision_tower, print_model_size
 
         # Load base model with specified configuration and dtype
         module = self._build_module()
@@ -582,6 +582,9 @@ class FSDPEngine(BaseEngine):
         # Apply QAT before FSDP wrapping (training only)
         if self._qat_enabled and not self.engine_config.forward_only:
             module = self._apply_qat(module)
+
+        if self.engine_config.freeze_vision_tower:
+            freeze_vision_tower(module, freeze_aligner=self.engine_config.freeze_vision_aligner)
 
         # Synchronize all distributed processes before proceeding
         torch.distributed.barrier()

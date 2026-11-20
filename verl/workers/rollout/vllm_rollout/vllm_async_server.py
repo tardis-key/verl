@@ -650,6 +650,16 @@ class vLLMHttpServer:
         if sampling_params.logprobs is not None:
             log_probs = [logprobs[token_ids[i]].logprob for i, logprobs in enumerate(final_res.outputs[0].logprobs)]
 
+        # Safety net: verl 0.9.0 bans MM tokens at logits time via monkey_patch_model.
+        # This should never fire; log if it does so we notice untested rollout paths.
+        vision_placeholder_ids = get_vision_placeholder_token_ids(self.model_config.processor)
+        leaked = [t for t in token_ids if t in set(vision_placeholder_ids)]
+        if leaked:
+            logger.warning(
+                "native ban failed: mm token leaked, ids=%s",
+                leaked,
+            )
+
         routed_experts = None
         if self.config.enable_rollout_routing_replay:
             routed_experts = final_res.outputs[0].routed_experts

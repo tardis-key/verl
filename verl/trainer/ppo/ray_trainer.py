@@ -211,9 +211,44 @@ def compute_advantage(
     Returns:
         DataProto: The updated data with computed advantages and returns.
     """
+    custom_cfg = None
+    if config is not None:
+        try:
+            custom_cfg = config["custom_advantage_function"]
+        except (KeyError, TypeError):
+            custom_cfg = getattr(config, "custom_advantage_function", None)
+
     # Back-compatible with trainers that do not compute response mask in fit
     if "response_mask" not in data.batch.keys():
         data.batch["response_mask"] = compute_response_mask(data)
+    if custom_cfg:
+        from oxygenrl.utils.custom import get_custom_fn
+
+        file_path = custom_cfg.get("path", None)
+        function_name = custom_cfg.get("name", None)
+        custom_kwargs = custom_cfg.get("kwargs", {})
+        custom_advantage_fn = get_custom_fn(file_path, function_name, custom_kwargs)
+        if custom_advantage_fn is not None:
+            custom_kwargs = {
+                "token_level_rewards": data.batch["token_level_rewards"],
+                "response_mask": data.batch["response_mask"],
+                "gamma": gamma,
+                "lam": lam,
+                "config": config,
+            }
+
+            if "uid" in data.non_tensor_batch:
+                custom_kwargs["index"] = data.non_tensor_batch["uid"]
+            if "reward_baselines" in data.batch:
+                custom_kwargs["reward_baselines"] = data.batch["reward_baselines"]
+            if "values" in data.batch:
+                custom_kwargs["values"] = data.batch["values"]
+
+            advantages, returns = custom_advantage_fn(**custom_kwargs)
+            data.batch["advantages"] = advantages
+            data.batch["returns"] = returns
+            return data
+
     # prepare response group
     if adv_estimator == AdvantageEstimator.GAE:
         # Compute advantages and returns using Generalized Advantage Estimation (GAE)
@@ -1517,6 +1552,21 @@ class RayPPOTrainer:
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
+                    # ALIGN(swift overlong_filter=true): exclude TRUNCATED completions (those that used
+                    # the full max_response_length budget => hit the length cap without EOS) from
+                    # loss/advantage, matching ms-swift. verl vanilla GRPO otherwise keeps them, which
+                    # inflates actor/grad_norm. Env-gated (ALIGN_MASK_TRUNCATED=1) so the default path is
+                    # unchanged. Operates on the final response_mask regardless of rollout path.
+                    if os.environ.get("ALIGN_MASK_TRUNCATED") == "1":
+                        _rm = batch.batch["response_mask"]
+                        _truncated = _rm.sum(dim=-1) >= _rm.size(-1)
+                        _n_trunc = int(_truncated.sum())
+                        if _n_trunc > 0:
+                            _rm = _rm.clone()
+                            _rm[_truncated] = 0
+                            batch.batch["response_mask"] = _rm
+                        metrics["align/truncated_masked"] = float(_n_trunc)
+                        metrics["align/truncated_frac"] = _n_trunc / _rm.size(0)
                     # Balance the number of valid tokens across DP ranks.
                     # NOTE: This usually changes the order of data in the `batch`,
                     # which won't affect the advantage calculation (since it's based on uid),

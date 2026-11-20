@@ -26,10 +26,12 @@ from verl.utils.tracking import RLInsightLogger
 @pytest.fixture(autouse=True)
 def _reset_rl_insight_logger():
     RLInsightLogger._init_done = False
+    RLInsightLogger._init_config = None
     RLInsightLogger._rl_insight_module = None
     RLInsightLogger._registered_metrics.clear()
     yield
     RLInsightLogger._init_done = False
+    RLInsightLogger._init_config = None
     RLInsightLogger._rl_insight_module = None
     RLInsightLogger._registered_metrics.clear()
 
@@ -89,6 +91,20 @@ def test_init_registers_transfer_queue_after_client_init(monkeypatch, mock_rl_in
     assert RLInsightLogger._init_done is True
 
 
+def test_lazy_init_reuses_explicit_rl_insight_config(monkeypatch, mock_rl_insight):
+    monkeypatch.setenv(RLInsightLogger.ENABLE_ENV, "1")
+    config = {"trainer": {"rl_insight": {"metrics": {"pull": True, "port": 18080}}}}
+
+    RLInsightLogger.init(project_name="proj", experiment_name="exp", config=config)
+    RLInsightLogger.log({"reward/mean": 1.0}, step=1)
+    with RLInsightLogger.trace_state("rollout", state_lane_id="replica_0"):
+        pass
+
+    mock_rl_insight.init.assert_called_once_with(
+        project="proj", experiment_name="exp", config=config["trainer"]["rl_insight"]
+    )
+
+
 def test_log_lazy_inits_and_writes_gauge(monkeypatch, mock_rl_insight):
     monkeypatch.setenv(RLInsightLogger.ENABLE_ENV, "1")
 
@@ -99,7 +115,7 @@ def test_log_lazy_inits_and_writes_gauge(monkeypatch, mock_rl_insight):
     assert RLInsightLogger._init_done is True
 
 
-def test_trace_state_lazy_inits_once_under_concurrent_async_tasks(monkeypatch, mock_rl_insight):
+def test_trace_state_does_not_init_under_concurrent_async_tasks(monkeypatch, mock_rl_insight):
     monkeypatch.setenv(RLInsightLogger.ENABLE_ENV, "1")
 
     async def _one(i: int):
@@ -111,9 +127,9 @@ def test_trace_state_lazy_inits_once_under_concurrent_async_tasks(monkeypatch, m
 
     asyncio.run(_run())
 
-    mock_rl_insight.init.assert_called_once_with()
+    mock_rl_insight.init.assert_not_called()
     assert mock_rl_insight.trace_state.call_count == 16
-    assert RLInsightLogger._init_done is True
+    assert RLInsightLogger._init_done is False
 
 
 def test_register_metrics_dedups_and_finish_resets(monkeypatch, mock_rl_insight):

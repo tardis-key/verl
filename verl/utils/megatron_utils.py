@@ -16,6 +16,7 @@
 # limitations under the License.
 """Pretrain utilities."""
 
+import functools
 import gc
 import inspect
 import logging
@@ -41,6 +42,7 @@ from transformers import PretrainedConfig
 import verl.utils.megatron.tensor_parallel as tp_utils
 from verl.utils.device import get_device_id, get_device_name, get_torch_device
 from verl.utils.fs import local_mkdir_safe
+from verl.utils.model import freeze_vision_tower as _freeze_vision_tower_impl
 from verl.utils.model import normalize_model_name
 from verl.utils.torch_dtypes import PrecisionType
 from verl.workers.config import HFModelConfig, McoreEngineConfig
@@ -292,6 +294,21 @@ class McoreModuleWrapperConfig:
     use_distributed_optimizer: bool = True
     use_layer_wise_distributed_optimizer: bool = False
     use_megatron_fsdp: bool = False
+    freeze_vision_tower: bool = False
+    freeze_vision_aligner: bool = True
+
+
+def _freeze_vision_tower_callback(model, *args, freeze_aligner: bool = True, **kwargs):
+    """post_model_creation / pre_wrap hook that freezes the vision tower before DDP.
+
+    Signature-flexible so it works for both mbridge backends:
+      * vanilla mbridge calls it as ``(model, pre_process=..., post_process=...,
+        config=..., hf_config=...)`` (see mbridge ``get_model_provider``);
+      * megatron-bridge registers it via ``register_pre_wrap_hook`` and calls ``(model)``.
+    ``required=False`` so non-first pipeline stages (``vision_model is None``) are skipped.
+    """
+    _freeze_vision_tower_impl(model, freeze_aligner=freeze_aligner, required=False)
+    return model
 
 
 def make_megatron_module(
@@ -335,6 +352,16 @@ def make_megatron_module(
             post_model_creation_callbacks.append(value_model_hook)
         if override_model_config.get("moe_config", {}).get("freeze_moe_router", False):
             post_model_creation_callbacks.append(freeze_moe_router)
+        if wrap_config.freeze_vision_tower:
+            # Mirror swift freeze_vit/freeze_aligner. Registered before DDP wrapping
+            # (both mbridge paths run post_model_creation_callbacks pre-wrap), so frozen
+            # params are excluded from grad buckets / distributed optimizer.
+            post_model_creation_callbacks.append(
+                functools.partial(
+                    _freeze_vision_tower_callback,
+                    freeze_aligner=wrap_config.freeze_vision_aligner,
+                )
+            )
         if provider is not None:
             # When using PEFT with Megatron-Bridge, we must apply PEFT transformation
             # BEFORE wrapping the model in DDP. This is required because:

@@ -1711,6 +1711,10 @@ class PPOTrainer(ABC):
         return batch
 
     def _compute_metrics(self, batch: KVBatchMeta, metrics, timing_raw, global_steps, epoch):
+        # OxygenRL: capture the original KVBatchMeta before `batch` is rebound to a DataProto
+        # below, so the agent_loop/* metrics restoration further down can still reach
+        # batch.keys/.partition_id/.tags after the rebind.
+        kv_batch_meta = batch
         # 1. collect necessary fields from TransferQueue for computing metrics
         non_padding_mask = np.array([not tag.get("is_padding", False) for tag in batch.tags], dtype=bool)
         fields = [
@@ -1782,6 +1786,20 @@ class PPOTrainer(ABC):
         )
         metrics.update(compute_data_metrics(batch=metrics_batch, use_critic=self.use_critic))
         metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+
+        # OxygenRL: restore agent_loop/* rollout performance metrics (generate_sequences/tool_calls/
+        # compute_score/num_preempted min/max/mean/slowest), which the TransferQueue-based V1 rollout
+        # path (AgentLoopManagerTQ.generate_sequences) never aggregates, unlike the legacy blocking
+        # AgentLoopManager.generate_sequences -> AgentLoopManager._performance_metrics path. The raw
+        # per-trajectory timing is still written into TransferQueue's "metrics" field by
+        # AgentLoopWorkerTQ._agent_loop_postprocess; this just reads it back and re-aggregates it.
+        try:
+            from oxygenrl.trainer.v1_agent_loop_metrics import compute_agent_loop_metrics
+
+            metrics.update(compute_agent_loop_metrics(kv_batch_meta))
+        except Exception:
+            logger.warning("Failed to compute agent_loop/* metrics for this step", exc_info=True)
+
         n_gpus = self._get_n_gpus_for_throughput()
         metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
         gradient_norm = metrics.get("actor/grad_norm", None)

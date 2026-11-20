@@ -249,17 +249,13 @@ class RLInsightLogger:
         if not cls.enabled() or cls._init_done:
             return
 
-        rl_insight_config = None
+        rl_insight_config = {}
         if config is not None:
             try:
-                rl_insight_config = config.get("trainer", {}).get("rl_insight", {}) or None
+                rl_insight_config = config.get("trainer", {}).get("rl_insight", {}) or {}
             except (AttributeError, KeyError, TypeError):
                 pass
-        cls._get_rl_insight().init(
-            project=project_name,
-            experiment_name=experiment_name,
-            config=rl_insight_config if rl_insight_config is not None else config,
-        )
+        cls._get_rl_insight().init(project=project_name, experiment_name=experiment_name, config=rl_insight_config)
         cls._init_done = True
         if config is not None:
             cls.register_transfer_queue_metrics(config)
@@ -268,12 +264,10 @@ class RLInsightLogger:
     def log(cls, data, step):
         if not cls.enabled():
             return
-        cls._ensure_rl_insight_init()
-        module = cls._get_rl_insight()
-        metric_gauge = module.metric_gauge
-        metric_log = getattr(module, "metric_log", None)
-        if not callable(metric_log):
-            metric_log = None
+        if not cls._init_done:
+            cls._get_rl_insight().init()
+            cls._init_done = True
+        metric_gauge = cls._get_rl_insight().metric_gauge
 
         for key, value in data.items():
             try:
@@ -281,14 +275,6 @@ class RLInsightLogger:
             except (TypeError, ValueError):
                 continue
             metric_gauge(str(key).replace("/", "_"), scalar)
-            if metric_log is not None:
-                metric_log(str(key), scalar, step=int(step))
-
-    @classmethod
-    def _ensure_rl_insight_init(cls):
-        if not cls._init_done:
-            cls._get_rl_insight().init()
-            cls._init_done = True
 
     @classmethod
     def finish(cls):
