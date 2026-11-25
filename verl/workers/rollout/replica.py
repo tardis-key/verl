@@ -113,8 +113,12 @@ class RolloutReplica(ABC):
         is_reward_model: bool = False,
         is_teacher_model: bool = False,
         name_suffix: str = "",
+        run_identity: dict[str, str] | None = None,
     ) -> None:
         self.replica_rank = replica_rank
+        # Project/experiment names of the trainer run; forwarded to server actors
+        # so rl-insight is initialized with them before any trace_state call.
+        self.run_identity: dict[str, str] = run_identity or {}
         self.config: RolloutConfig = omega_conf_to_dataclass(config)
         if self.config.prefix_cache_namespace is None:
             self.config.prefix_cache_namespace = _PREFIX_CACHE_NAMESPACE

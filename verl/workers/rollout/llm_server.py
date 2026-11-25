@@ -369,6 +369,24 @@ class FullyAsyncLLMServerClient(LLMServerClient):
         return final_output
 
 
+def _rl_insight_run_identity(config) -> dict[str, str]:
+    """Return the trainer's project/experiment names for rl-insight, if any."""
+    try:
+        trainer = config.get("trainer", None)
+        if trainer is None:
+            return {}
+    except (AttributeError, KeyError, TypeError):
+        return {}
+    project = trainer.get("project_name", None)
+    experiment = trainer.get("experiment_name", None)
+    identity = {}
+    if project:
+        identity["project"] = str(project)
+    if experiment:
+        identity["experiment_name"] = str(experiment)
+    return identity
+
+
 class LLMServerManager:
     """LLMServerManager is responsible for:
     - Launch server replicas
@@ -398,6 +416,7 @@ class LLMServerManager:
     ):
         self.config = config
         self.rollout_config = config.actor_rollout_ref.rollout
+        self.run_identity = _rl_insight_run_identity(config)
         self.model_config = config.actor_rollout_ref.model
         self.worker_group = worker_group
         self.rollout_resource_pool = rollout_resource_pool
@@ -483,6 +502,7 @@ class LLMServerManager:
                 config=self.rollout_config,
                 model_config=self.model_config,
                 gpus_per_node=self.rollout_config.n_gpus_per_node,
+                run_identity=self.run_identity,
             )
             for replica_rank in range(num_replicas)
         ]

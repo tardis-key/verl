@@ -103,6 +103,26 @@ logger = logging.getLogger(__file__)
 logger.setLevel(logging.INFO)
 
 
+def _init_rl_insight(run_identity: Optional[dict[str, str]]) -> None:
+    """Initialize rl-insight with the trainer's run names before any trace.
+
+    ``rl_insight.api.trace_state`` creates its client with default project and
+    experiment names when it runs first, and a later ``init(project=...)`` is
+    ignored. This server actor starts before the trainer logger, so it needs to
+    initialize first — with the names carried down from the trainer config.
+    """
+    if not RLInsightLogger.enabled():
+        return
+    identity = run_identity or {}
+    try:
+        RLInsightLogger.init(
+            project_name=identity.get("project"),
+            experiment_name=identity.get("experiment_name"),
+        )
+    except Exception:  # monitoring must never break rollout
+        logger.warning("rl-insight initialization in rollout server failed", exc_info=True)
+
+
 class vLLMHttpServer:
     """vLLM http server in single node, this is equivalent to launch server with command line:
     ```
@@ -123,6 +143,7 @@ class vLLMHttpServer:
         cuda_visible_devices: str,
         disaggregation_role: str = "null",
         disaggregation_kv_transfer_config: Optional[dict] = None,
+        run_identity: Optional[dict[str, str]] = None,
     ):
         """
         Args:
@@ -137,6 +158,7 @@ class vLLMHttpServer:
             disaggregation_role: PD role, or ``"null"`` for normal rollout.
             disaggregation_kv_transfer_config: vLLM KVTransferConfig dict for PD.
         """
+        _init_rl_insight(run_identity)
         if disaggregation_role not in ("null", "prefill", "decode"):
             raise ValueError(f"disaggregation_role must be 'null'|'prefill'|'decode', got {disaggregation_role!r}")
         if disaggregation_role != "null" and disaggregation_kv_transfer_config is None:
@@ -1620,9 +1642,17 @@ class vLLMReplica(RolloutReplica):
         is_reward_model: bool = False,
         is_teacher_model: bool = False,
         name_suffix: str = "",
+        run_identity: Optional[dict[str, str]] = None,
     ):
         super().__init__(
-            replica_rank, config, model_config, gpus_per_node, is_reward_model, is_teacher_model, name_suffix
+            replica_rank,
+            config,
+            model_config,
+            gpus_per_node,
+            is_reward_model,
+            is_teacher_model,
+            name_suffix,
+            run_identity,
         )
         self.server_class = ray.remote(vLLMHttpServer)
 
@@ -1692,6 +1722,7 @@ class vLLMReplica(RolloutReplica):
                 gpus_per_node=gpus_per_replica_node,
                 nnodes=nnodes,
                 cuda_visible_devices=node_cuda_visible_devices,
+                run_identity=self.run_identity,
             )
             self.servers.append(server)
 
